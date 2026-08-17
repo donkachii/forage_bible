@@ -1,6 +1,6 @@
-# Holy Bible
+# Foredge
 
-A Bible sitting on a table. Turn to any of the sixty-six books, click it, and it
+A bound Bible sitting on a table. Turn to any of the sixty-six books, click it, and it
 opens in 3D into a two-page spread you can read and page through.
 
 ```bash

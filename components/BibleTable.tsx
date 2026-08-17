@@ -357,7 +357,7 @@ function Chrome({
   return (
     <header className="relative z-30 flex shrink-0 items-center justify-between gap-4 px-5 py-6 md:px-10">
       <div className="flex items-baseline gap-4 whitespace-nowrap">
-        <span className="label text-ink-soft">Holy Bible</span>
+        <span className="label text-ink-soft">Foredge</span>
         <span className="label hidden text-ink-faint md:inline">World English Bible</span>
       </div>
 

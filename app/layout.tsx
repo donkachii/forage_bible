@@ -19,9 +19,9 @@ const garamond = EB_Garamond({
 });
 
 export const metadata: Metadata = {
-  title: "Holy Bible — open it and read",
+  title: "Foredge — a Bible you open",
   description:
-    "A Bible on a table. Turn to any of the sixty-six books, click to open it, and read the World English Bible.",
+    "A bound Bible on a table. Turn to any of the sixty-six books, click it open, and read the World English Bible.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

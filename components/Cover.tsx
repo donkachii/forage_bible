@@ -55,11 +55,17 @@ export function CoverOutside({ book }: { book: string }) {
         </p>
       </div>
 
+      {/* The imprint, blocked at the foot of the board. It sits here rather
+          than on the spine because the closed book is turned to show its
+          gilded fore-edge, which leaves the spine facing away. */}
       <p
-        className="label absolute inset-x-0 bottom-[6.5%] text-center text-gilt/45"
-        style={{ fontSize: "clamp(0.34rem, 2.4cqw, 0.5rem)" }}
+        className="label absolute inset-x-0 bottom-[6.5%] text-center text-gilt/50"
+        style={{
+          fontSize: "clamp(0.34rem, 2.4cqw, 0.5rem)",
+          textShadow: "0 1px 0 rgba(0,0,0,0.5)",
+        }}
       >
-        World English Bible
+        Foredge
       </p>
     </div>
   );
