@@ -12,7 +12,10 @@
 
   --color-ink: #16181f;
   --color-ink-soft: #5b6070;
-  --color-ink-faint: #9aa0b2;
+  /* Both of these clear 4.5:1 on the haze ground and on vellum. The quieter
+     one used to be #9aa0b2, which measured 2.1:1 — legible as a shape, not as
+     text, and it carried most of the chrome. */
+  --color-ink-faint: #5f6675;
 
   --color-indigo: #2c3aae;
   --color-indigo-deep: #141a4d;
@@ -49,7 +52,7 @@
   }
 
   :focus-visible {
-    outline: 1.5px solid var(--color-indigo);
+    outline: 2px solid var(--color-indigo);
     outline-offset: 3px;
     border-radius: 2px;
   }
@@ -57,7 +60,9 @@
 
 @utility label {
   font-family: var(--font-text);
-  font-size: 0.6875rem;
+  /* 12px is the floor for text this small; letterspaced caps at 11px were
+     shape-recognition rather than reading. */
+  font-size: 0.75rem;
   font-weight: 500;
   letter-spacing: 0.34em;
   text-transform: uppercase;

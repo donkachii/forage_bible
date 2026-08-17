@@ -21,7 +21,9 @@ export function VerseFlow({ verses, chapter }: { verses: Verse[]; chapter: numbe
           </span>
         ) : (
           <span key={v.verse} data-verse={v.verse}>
-            <sup className="mr-[0.16em] ml-[0.12em] font-display text-[0.56em] text-rubric/70 tabular-nums">
+            {/* Verse numbers are navigation, not ornament: people scan for
+                them. At 0.56em/70% they measured 7.9px and 3.3:1. */}
+            <sup className="mr-[0.16em] ml-[0.12em] font-display text-[0.68em] text-rubric tabular-nums">
               {v.verse}
             </sup>
             {v.text}{" "}
@@ -37,13 +39,11 @@ type PageProps = {
   book: string;
   chapter: number;
   verses: Verse[];
-  /** Text on the reverse of this leaf, which ghosts through the paper. */
-  showThrough: Verse[];
   folio: number;
   bodyRef?: React.Ref<HTMLDivElement>;
 };
 
-export function PageFace({ side, book, chapter, verses, showThrough, folio, bodyRef }: PageProps) {
+export function PageFace({ side, book, chapter, verses, folio, bodyRef }: PageProps) {
   const first = verses[0]?.verse;
   const last = verses[verses.length - 1]?.verse;
   const range = first ? (first === last ? `${chapter}:${first}` : `${chapter}:${first}–${last}`) : "";
@@ -80,26 +80,12 @@ export function PageFace({ side, book, chapter, verses, showThrough, folio, body
       )}
 
       <div ref={bodyRef} className={`relative min-h-0 flex-1 ${BODY_TYPE}`}>
-        {/* India paper: the reverse of this leaf, faintly showing through it. */}
-        {showThrough.length > 0 && (
-          <div
-            aria-hidden
-            className="pointer-events-none absolute inset-0 overflow-hidden opacity-[0.04] blur-[0.4px]"
-            style={{ transform: "scaleX(-1)" }}
-          >
-            {showThrough.map((v) => (
-              <span key={v.verse}>{v.text} </span>
-            ))}
-          </div>
-        )}
-        <div className="relative">
-          <VerseFlow verses={verses} chapter={chapter} />
-        </div>
+        <VerseFlow verses={verses} chapter={chapter} />
       </div>
 
       {verses.length > 0 && (
         <footer className="relative mt-[3%] shrink-0 text-center">
-          <span className="font-display text-[0.68rem] text-ink-faint tabular-nums">{folio}</span>
+          <span className="font-display text-[0.75rem] text-ink-faint tabular-nums">{folio}</span>
         </footer>
       )}
     </div>

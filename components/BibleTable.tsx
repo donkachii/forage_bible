@@ -1,13 +1,18 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import { CANON, DIVISION_NOTE } from "@/lib/canon";
 import { OPENING, type Passage } from "@/lib/passage";
 import { usePagination } from "./usePagination";
 import { BODY_TYPE, PageFace, VerseFlow } from "./Page";
 import { useReducedMotion } from "./useReducedMotion";
-import { CoverInside, CoverOutside } from "./Cover";
 import { Chevron } from "./Chevron";
+import { drawPage } from "./pageArt";
+import type { SceneControls } from "./BookScene";
+
+// WebGL touches document on construction, so it stays out of the server pass.
+const BookScene = dynamic(() => import("./BookScene"), { ssr: false });
 
 type Phase = "shelf" | "opening" | "reading" | "closing";
 
@@ -24,6 +29,10 @@ export default function BibleTable() {
   const [loading, setLoading] = useState(false);
   const [leaf, setLeaf] = useState(0);
   const [dims, setDims] = useState({ pw: 420, ph: 580, single: false });
+  // While a leaf is crossing the gutter the scene shows the spread, not the
+  // reader — the moving page has to carry its own text.
+  const [turning, setTurning] = useState(false);
+  const stageRef = useRef<SceneControls | null>(null);
 
   const book = CANON[index];
   const open = phase === "opening" || phase === "reading";
@@ -110,12 +119,16 @@ export default function BibleTable() {
   }, []);
 
   const goTo = useCallback(
-    (bookIdx: number, ch: number) => {
+    (bookIdx: number, ch: number, atEnd = false) => {
       const target = CANON[bookIdx];
       const bounded = Math.min(Math.max(ch, 1), target.chapters);
       setIndex(bookIdx);
       setChapter(bounded);
-      setLeaf(0);
+      // Backing out of a chapter should land on its last page, the way closing
+      // a book on your thumb does. The spread count is not known until the new
+      // chapter has been measured, so ask for the end and let the clamp
+      // resolve it once the pages settle.
+      setLeaf(atEnd ? Number.MAX_SAFE_INTEGER : 0);
       void load(target.name, bounded);
     },
     [load],
@@ -176,21 +189,73 @@ export default function BibleTable() {
     return out.length ? out : [[[]]];
   }, [pages, perSpread, passage.verses]);
 
-  const spread = spreads[Math.min(leaf, spreads.length - 1)] ?? [[]];
+  // Re-measuring can leave fewer spreads than the leaf we are sitting on —
+  // a resize mid-chapter, or the webfont landing after the first pass. Every
+  // read of the position goes through the clamp, so the footer can never
+  // claim to be on page 3 of 2 while the pages settle.
+  const currentLeaf = Math.min(leaf, spreads.length - 1);
+  const spread = spreads[currentLeaf] ?? [[]];
   const versesOn = (page?: number[]) => (page ?? []).map((i) => passage.verses[i]).filter(Boolean);
-  const pageAt = (n: number) => (pages[n] ? versesOn(pages[n]) : []);
 
-  const atStart = leaf === 0;
-  const atEnd = leaf >= spreads.length - 1;
+  const atStart = currentLeaf === 0;
+  const atEnd = currentLeaf >= spreads.length - 1;
   const firstBook = index === 0 && chapter === 1;
   const lastBook = index === CANON.length - 1 && chapter === book.chapters;
 
+  /** Paints one page of the chapter at the size the scene draws it. */
+  const paint = useCallback(
+    (page: number[] | undefined, side: "verso" | "recto", folio: number) =>
+      drawPage({
+        verses: versesOn(page),
+        chapter: passage.chapter,
+        book: book.name,
+        folio,
+        side,
+        width: dims.pw,
+        height: dims.ph,
+        bodyFont: bodyRef.current
+          ? getComputedStyle(bodyRef.current).fontFamily
+          : "Garamond, serif",
+        showChrome: (page ?? []).length > 0,
+      }),
+    // versesOn closes over the current passage, which the deps already track.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [passage, book.name, dims.pw, dims.ph],
+  );
+
   const turn = useCallback(
     (step: number) => {
-      if (phase !== "reading") return;
-      const next = leaf + step;
+      if (phase !== "reading" || turning) return;
+      const next = currentLeaf + step;
       if (next >= 0 && next < spreads.length) {
-        setLeaf(next);
+        const scene = stageRef.current;
+        // Within a chapter the leaf is a real object, so run it across before
+        // the text changes underneath. Everything else is a jump cut anyway.
+        if (!scene || reduced || dims.single) {
+          setLeaf(next);
+          return;
+        }
+        const forward = step > 0;
+        const from = spreads[currentLeaf] ?? [];
+        const to = spreads[next] ?? [];
+        // Forward: the recto you were on lifts, its reverse is the new verso,
+        // and the new recto is already lying underneath. Backward mirrors it.
+        const art = forward
+          ? {
+              front: paint(from[1], "recto", currentLeaf * 2 + 2),
+              back: paint(to[0], "verso", next * 2 + 1),
+              under: { left: paint(from[0], "verso", currentLeaf * 2 + 1), right: paint(to[1], "recto", next * 2 + 2) },
+            }
+          : {
+              front: paint(to[1], "recto", next * 2 + 2),
+              back: paint(from[0], "verso", currentLeaf * 2 + 1),
+              under: { left: paint(to[0], "verso", next * 2 + 1), right: paint(from[1], "recto", currentLeaf * 2 + 2) },
+            };
+        setTurning(true);
+        void scene.turn(art, forward).then(() => {
+          setLeaf(next);
+          setTurning(false);
+        });
         return;
       }
       if (step > 0) {
@@ -198,10 +263,10 @@ export default function BibleTable() {
         else if (index < CANON.length - 1) goTo(index + 1, 1);
         return;
       }
-      if (chapter > 1) goTo(index, chapter - 1);
-      else if (index > 0) goTo(index - 1, CANON[index - 1].chapters);
+      if (chapter > 1) goTo(index, chapter - 1, true);
+      else if (index > 0) goTo(index - 1, CANON[index - 1].chapters, true);
     },
-    [phase, leaf, spreads.length, chapter, book.chapters, index, goTo],
+    [phase, currentLeaf, spreads, chapter, book.chapters, index, goTo, turning, reduced, dims.single, paint],
   );
 
   /* --- Keyboard ----------------------------------------------------------- */
@@ -279,20 +344,22 @@ export default function BibleTable() {
       <Scene
         style={scene}
         open={open}
+        reading={phase === "reading"}
         book={book.name}
-        chapter={chapter}
         passage={passage}
         spread={spread}
-        pages={pages}
-        leaf={leaf}
+        leaf={currentLeaf}
         perSpread={perSpread}
         versesOn={versesOn}
-        pageAt={pageAt}
         onOpen={openBook}
         label={label}
         bodyRef={bodyRef}
         openMs={OPEN_MS}
         openRef={openRef}
+        pageHeight={dims.ph}
+        reduced={reduced}
+        turning={turning}
+        controlsRef={stageRef}
       />
 
       {/* Off-screen twin of the chapter, set at the real column width. */}
@@ -312,7 +379,7 @@ export default function BibleTable() {
           onTurn={turn}
           atStart={atStart && firstBook}
           atEnd={atEnd && lastBook}
-          position={`${label} · ${leaf + 1} of ${spreads.length}`}
+          position={`${label} · ${currentLeaf + 1} of ${spreads.length}`}
           loading={loading}
         />
       )}
@@ -369,7 +436,7 @@ function Chrome({
               value={chapter}
               onChange={(e) => onChapter(Number(e.target.value))}
               aria-label={`Chapter of ${book.name}`}
-              className="label cursor-pointer rounded-sm border border-ink/15 bg-transparent py-1 pr-1 pl-2 text-ink hover:border-indigo/50"
+              className="label min-h-9 cursor-pointer rounded-sm border border-ink/15 bg-transparent py-1 pr-1 pl-2 text-ink hover:border-indigo/50"
             >
               {Array.from({ length: book.chapters }, (_, i) => i + 1).map((n) => (
                 <option key={n} value={n}>
@@ -383,7 +450,7 @@ function Chrome({
           ref={closeRef}
           onClick={onClose}
           disabled={!active}
-          className="label text-ink-soft transition-colors hover:text-indigo disabled:pointer-events-none disabled:opacity-0"
+          className="label flex min-h-11 items-center gap-[0.34em] px-1 text-ink-soft transition-colors hover:text-indigo disabled:pointer-events-none disabled:opacity-0"
         >
           Close<span className="hidden sm:inline"> the book</span>
         </button>
@@ -444,7 +511,7 @@ function Shelf({
         </p>
         <button
           onClick={onOpen}
-          className="label pointer-events-auto mt-4 text-ink-faint transition-colors hover:text-indigo"
+          className="label pointer-events-auto mt-2 inline-flex min-h-11 items-center px-3 text-ink-faint transition-colors hover:text-indigo"
         >
           Click the book to open it
         </button>
@@ -499,259 +566,145 @@ function Turner({
 type SceneProps = {
   style: React.CSSProperties;
   open: boolean;
+  reading: boolean;
   book: string;
-  chapter: number;
   passage: Passage;
   spread: number[][];
-  pages: number[][];
-  leaf: number;
   perSpread: number;
   versesOn: (page?: number[]) => Passage["verses"];
-  pageAt: (n: number) => Passage["verses"];
   onOpen: () => void;
   label: string;
   bodyRef: React.Ref<HTMLDivElement>;
   openMs: number;
   openRef: React.Ref<HTMLButtonElement>;
+  pageHeight: number;
+  leaf: number;
+  reduced: boolean;
+  turning: boolean;
+  controlsRef: React.RefObject<SceneControls | null>;
 };
 
 function Scene({
   style,
   open,
+  reading,
   book,
   passage,
   spread,
-  leaf,
   perSpread,
   versesOn,
-  pageAt,
   onOpen,
   label,
   bodyRef,
   openMs: OPEN_MS,
   openRef,
+  pageHeight,
+  leaf,
+  reduced,
+  turning,
+  controlsRef,
 }: SceneProps) {
-  const versoIdx = leaf * perSpread;
-  const rectoIdx = versoIdx + 1;
+  // The moving leaf lives in the scene, so the reader stands aside for it.
+  const showText = reading && !turning;
   const single = perSpread === 1;
-
+  const versoIdx = leaf * perSpread;
   const versoVerses = versesOn(spread[0]);
   const rectoVerses = single ? [] : versesOn(spread[1]);
 
   return (
-    <div
-      className="relative z-10 grid flex-1 place-items-center"
-      style={{ ...style, perspective: "2600px", perspectiveOrigin: "50% 44%" }}
-    >
+    <div className="relative z-10 grid flex-1 place-items-center" style={style}>
       <div className="relative" style={{ width: "var(--pw)", height: "var(--ph)" }}>
-        {/* The book's shadow on the table, cast by the same high-left light. */}
+        {/* Contact shadow on the table, widening as the book opens out. */}
         <div
           aria-hidden
-          className="absolute top-[86%] left-1/2 -z-10 rounded-[50%] blur-2xl"
+          className="absolute top-[88%] left-1/2 -z-10 rounded-[50%] blur-2xl"
           style={{
-            width: open ? "calc(var(--pw) * 2.05)" : "calc(var(--pw) * 0.95)",
-            height: "calc(var(--ph) * 0.17)",
-            transform: `translateX(${open ? "-50%" : "-46%"}) translateY(${open ? "6%" : "0"})`,
-            background: "radial-gradient(closest-side, rgba(48,58,96,0.42), rgba(48,58,96,0))",
+            width: open ? "calc(var(--pw) * 2.05)" : "calc(var(--pw) * 0.9)",
+            height: "calc(var(--ph) * 0.16)",
+            transform: `translateX(-50%) translateY(${open ? "4%" : "0"})`,
+            background: "radial-gradient(closest-side, rgba(48,58,96,0.4), rgba(48,58,96,0))",
             transition: `all ${OPEN_MS}ms var(--ease-leather)`,
           }}
         />
 
+        {/* The object itself. It holds the shelf, the opening and the closing;
+            once the spread is flat it hands over to real text and steps back. */}
         <div
-          className="absolute top-0 left-1/2 h-full w-0"
+          className="pointer-events-none absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2"
           style={{
-            transformStyle: "preserve-3d",
-            transform:
-              "translateX(calc(var(--pw) * var(--scale) / -2 * var(--offset, 0))) scale(var(--scale)) rotateX(var(--tilt-x)) rotateY(var(--tilt-y))",
-            transformOrigin: "center center",
-            transition: `transform ${OPEN_MS}ms var(--ease-leather)`,
-            // The spine is the origin. Centre the spread on it once both
-            // halves are showing; otherwise centre the single leaf instead.
-            ["--offset" as string]: open && !single ? 0 : 1,
+            width: "calc(var(--pw) * 3)",
+            height: "calc(var(--ph) * 1.6)",
+            opacity: showText ? 0 : 1,
+            transition: turning ? "none" : `opacity 340ms ease ${showText ? 120 : 0}ms`,
           }}
         >
-          {/* ---- Left half: revealed only once the board swings clear ---- */}
-          <Leaf
-            visible={open && !single}
-            delay={OPEN_MS * 0.42}
-            style={{ transform: "translateX(calc(var(--pw) * -1)) translateZ(calc(var(--tk) / 2 + 9px))" }}
-          >
-            <PageFace
-              side="verso"
-              book={book}
-              chapter={passage.chapter}
-              verses={versoVerses}
-              showThrough={pageAt(versoIdx - 1)}
-              folio={versoIdx + 1}
-            />
-          </Leaf>
-
-          {/* Gilding on the outer edge of the left half. */}
-          <div
-            aria-hidden
-            className="gilt-edge absolute top-0 left-0"
-            style={{
-              width: "var(--tk)",
-              height: "var(--ph)",
-              transformOrigin: "left center",
-              transform:
-                "translateX(calc(var(--pw) * -1)) translateZ(calc(var(--tk) / 2 + 8px)) rotateY(90deg) scaleX(-1)",
-              opacity: open && !single ? 1 : 0,
-              transition: `opacity 400ms ease ${open ? OPEN_MS * 0.5 : 0}ms`,
-            }}
+          <BookScene
+            open={open}
+            active={!showText}
+            book={book}
+            pageHeightPx={pageHeight}
+            reduced={reduced}
+            controlsRef={controlsRef}
+            className="h-full w-full"
           />
-
-          {/* ---- Right half: the top leaf of the block ---- */}
-          <div
-            className="absolute top-0 left-0 overflow-hidden rounded-[2px_4px_4px_2px] bg-vellum"
-            style={{
-              width: "var(--pw)",
-              height: "var(--ph)",
-              transform: "translateZ(calc(var(--tk) / 2 - 1px))",
-              boxShadow: "0 1px 3px rgba(0,0,0,0.18)",
-            }}
-          >
-            <div
-              aria-hidden={!open}
-              className="h-full transition-opacity duration-500"
-              style={{ opacity: open ? 1 : 0, transitionDelay: open ? `${OPEN_MS * 0.5}ms` : "0ms" }}
-            >
-              <PageFace
-                side={single ? "verso" : "recto"}
-                book={book}
-                chapter={passage.chapter}
-                verses={single ? versoVerses : rectoVerses}
-                showThrough={pageAt(rectoIdx + 1)}
-                folio={(single ? versoIdx : rectoIdx) + 1}
-                bodyRef={bodyRef}
-              />
-            </div>
-          </div>
-
-          {/* Gilding on the fore-edge. */}
-          <div
-            aria-hidden
-            className="gilt-edge absolute top-0 left-0"
-            style={{
-              width: "var(--tk)",
-              height: "var(--ph)",
-              transformOrigin: "left center",
-              transform: "translateX(var(--pw)) translateZ(calc(var(--tk) / 2)) rotateY(90deg)",
-            }}
-          />
-          {/* Gilding on the head. */}
-          <div
-            aria-hidden
-            className="gilt-edge-head absolute top-0 left-0"
-            style={{
-              width: "var(--pw)",
-              height: "var(--tk)",
-              transformOrigin: "center top",
-              transform: "translateZ(calc(var(--tk) / 2)) rotateX(-90deg)",
-              filter: "brightness(1.14)",
-            }}
-          />
-
-          {/* ---- Spine ---- */}
-          <div
-            aria-hidden
-            className="absolute top-0 left-0 overflow-hidden"
-            style={{
-              width: "var(--tk)",
-              height: "var(--ph)",
-              transformOrigin: "left center",
-              transform: "translateZ(calc(var(--tk) / -2)) rotateY(-90deg)",
-              background: "linear-gradient(90deg, #0a0d22, #232a63 40%, #11142f)",
-              boxShadow: "inset 0 0 0 1px rgba(201,162,39,0.18)",
-            }}
-          >
-            <div className="grain-leather absolute inset-0 opacity-30 mix-blend-overlay" />
-          </div>
-
-          {/* ---- Front board ---- */}
-          <button
-            ref={openRef}
-            onClick={onOpen}
-            disabled={open}
-            aria-label={open ? undefined : `Open the Bible at ${label}`}
-            className="group absolute top-0 left-0 cursor-pointer disabled:cursor-default"
-            style={{
-              width: "calc(var(--pw) + var(--sq))",
-              height: "calc(var(--ph) + var(--sq) * 2)",
-              marginTop: "calc(var(--sq) * -1)",
-              transformStyle: "preserve-3d",
-              transformOrigin: "left center",
-              transform: "translateZ(calc(var(--tk) / 2 + 1px)) rotateY(var(--cover))",
-              // With one leaf showing there is no facing page for the board to
-              // land on, so it goes once it has swung past the spine.
-              opacity: open && single ? 0 : 1,
-              transition: `transform ${OPEN_MS}ms var(--ease-leather), opacity 300ms linear ${
-                open ? OPEN_MS * 0.55 : 0
-              }ms`,
-            }}
-          >
-            <div
-              className="absolute inset-0 transition-transform duration-500 ease-out group-enabled:group-hover:translate-y-[-6px]"
-              style={{ transformStyle: "preserve-3d" }}
-            >
-              <div className="absolute inset-0 [backface-visibility:hidden]">
-                <CoverOutside book={book} />
-              </div>
-              <div
-                className="absolute inset-0 [backface-visibility:hidden]"
-                style={{ transform: "rotateY(180deg)" }}
-              >
-                <CoverInside />
-              </div>
-            </div>
-          </button>
-
-          {/* ---- Back board ---- */}
-          <div
-            aria-hidden
-            className="absolute top-0 left-0 rounded-[3px_7px_7px_3px]"
-            style={{
-              width: "calc(var(--pw) + var(--sq))",
-              height: "calc(var(--ph) + var(--sq) * 2)",
-              marginTop: "calc(var(--sq) * -1)",
-              transform: "translateZ(calc(var(--tk) / -2 - 1px))",
-              background: "linear-gradient(118deg, #0d1029, #1b2050 60%, #0b0e24)",
-            }}
-          >
-            <div className="grain-leather absolute inset-0 opacity-30 mix-blend-overlay" />
-          </div>
-
         </div>
 
-      </div>
-    </div>
-  );
-}
+        {/* Reading is a flat activity. Every dimensional trick lives in the
+            scene above; here the text just needs to sit still and be read. */}
+        <div
+          aria-hidden={!showText}
+          className="absolute top-1/2 left-1/2 flex -translate-x-1/2 -translate-y-1/2 rounded-[3px] p-[6px]"
+          style={{
+            opacity: showText ? 1 : 0,
+            transition: turning ? "none" : `opacity 340ms ease ${showText ? 120 : 0}ms`,
+            background: "linear-gradient(118deg, #10132f, #1b2050 58%, #0b0e24)",
+            boxShadow: "0 18px 40px rgba(28,36,74,0.3)",
+          }}
+        >
+          {!single && (
+            <div
+              className="overflow-hidden rounded-[3px_1px_1px_3px] bg-vellum"
+              style={{ width: "var(--pw)", height: "var(--ph)" }}
+            >
+              <PageFace
+                side="verso"
+                book={book}
+                chapter={passage.chapter}
+                verses={versoVerses}
+                folio={versoIdx + 1}
+              />
+            </div>
+          )}
+          <div
+            className="overflow-hidden rounded-[1px_3px_3px_1px] bg-vellum"
+            style={{ width: "var(--pw)", height: "var(--ph)" }}
+          >
+            <PageFace
+              side={single ? "verso" : "recto"}
+              book={book}
+              chapter={passage.chapter}
+              verses={single ? versoVerses : rectoVerses}
+              folio={(single ? versoIdx : versoIdx + 1) + 1}
+              bodyRef={bodyRef}
+            />
+          </div>
+        </div>
 
-function Leaf({
-  visible,
-  delay,
-  style,
-  children,
-}: {
-  visible: boolean;
-  delay: number;
-  style: React.CSSProperties;
-  children: React.ReactNode;
-}) {
-  return (
-    <div
-      className="absolute top-0 left-0 overflow-hidden rounded-[4px_2px_2px_4px] bg-vellum"
-      style={{
-        width: "var(--pw)",
-        height: "var(--ph)",
-        boxShadow: "0 1px 3px rgba(0,0,0,0.18)",
-        opacity: visible ? 1 : 0,
-        transition: `opacity 420ms ease ${visible ? delay : 0}ms`,
-        ...style,
-      }}
-    >
-      {children}
+        {/* The book is a canvas, so the affordance is a real button laid over
+            it — keyboard reachable, and labelled with where it will open. */}
+        <button
+          ref={openRef}
+          onClick={onOpen}
+          disabled={open}
+          aria-label={open ? undefined : `Open the Bible at ${label}`}
+          className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 cursor-pointer rounded-sm disabled:pointer-events-none"
+          style={{
+            width: "calc(var(--pw) * 1.05)",
+            height: "calc(var(--ph) * 1.05)",
+            opacity: showText ? 0 : 1,
+          }}
+        />
+      </div>
     </div>
   );
 }
