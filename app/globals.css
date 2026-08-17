@@ -1,26 +1,165 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+@theme {
+  /* A cool, pale room — the ground everything floats in. */
+  --color-haze: #e4e7ef;
+  --color-haze-lift: #eef0f6;
+  --color-haze-deep: #c3cadd;
+
+  /* Warm paper, deliberately at odds with the cool room. */
+  --color-vellum: #f6f1e4;
+  --color-vellum-shade: #e6ddc8;
+
+  --color-ink: #16181f;
+  --color-ink-soft: #5b6070;
+  --color-ink-faint: #9aa0b2;
+
+  --color-indigo: #2c3aae;
+  --color-indigo-deep: #141a4d;
+
+  --color-gilt: #c9a227;
+  --color-gilt-bright: #f0dc9a;
+  --color-gilt-deep: #8a6a12;
+
+  /* Rubrication — the red the scribes reserved for chapter initials. */
+  --color-rubric: #a3372c;
+
+  --font-display: var(--font-bodoni), "Bodoni Moda", Didot, serif;
+  --font-text: var(--font-garamond), "EB Garamond", Garamond, serif;
+
+  --ease-leather: cubic-bezier(0.72, 0.02, 0.18, 1);
+  --ease-settle: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+  body {
+    background: var(--color-haze);
+    color: var(--color-ink);
+    font-family: var(--font-text);
+    overflow-x: hidden;
+  }
+
+  ::selection {
+    background: color-mix(in srgb, var(--color-indigo) 22%, transparent);
+  }
+
+  :focus-visible {
+    outline: 1.5px solid var(--color-indigo);
+    outline-offset: 3px;
+    border-radius: 2px;
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+@utility label {
+  font-family: var(--font-text);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.34em;
+  text-transform: uppercase;
+  line-height: 1;
+}
+
+/* ---- Materials -------------------------------------------------------- */
+
+@utility grain-leather {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+@utility grain-paper {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='p'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.62' numOctaves='5' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23p)'/%3E%3C/svg%3E");
+}
+
+/* Gold leaf, hammered onto the three exposed edges of the page block.
+   Striations run across the stack, so each leaf reads as its own line —
+   which means they run down the head edge and across the fore-edge. */
+@utility gilt-edge-head {
+  background-image:
+    repeating-linear-gradient(
+      to bottom,
+      rgba(0, 0, 0, 0.2) 0px,
+      rgba(0, 0, 0, 0) 0.6px,
+      rgba(255, 255, 255, 0.28) 1.2px,
+      rgba(0, 0, 0, 0.14) 2px
+    ),
+    linear-gradient(170deg, #b08d1c 0%, #f2e0a4 34%, #c9a227 58%, #efdb99 78%, #a8841a 100%);
+}
+
+@utility gilt-edge {
+  background-image:
+    repeating-linear-gradient(
+      to right,
+      rgba(0, 0, 0, 0.22) 0px,
+      rgba(0, 0, 0, 0) 0.5px,
+      rgba(255, 255, 255, 0.3) 1px,
+      rgba(0, 0, 0, 0.16) 1.6px
+    ),
+    linear-gradient(
+      100deg,
+      #6b4f0d 0%,
+      #c9a227 14%,
+      #f4e3a8 30%,
+      #b08d1c 46%,
+      #efdb99 62%,
+      #9c7a15 80%,
+      #d8bb52 100%
+    );
+}
+
+/* ---- The room --------------------------------------------------------- */
+
+/* A single soft light source, high and slightly left, as if from a window. */
+@utility room-light {
+  background:
+    radial-gradient(120% 90% at 42% 8%, #f4f6fb 0%, rgba(244, 246, 251, 0) 55%),
+    radial-gradient(100% 70% at 50% 118%, var(--color-haze-deep) 0%, rgba(195, 202, 221, 0) 60%);
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-9px);
+  }
+}
+
+@keyframes descend {
+  0%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.5;
+  }
+  50% {
+    transform: translateY(7px);
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    animation-delay: 0ms !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0ms !important;
+  }
 }
