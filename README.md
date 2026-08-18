@@ -66,6 +66,14 @@ Animation is smoothed **per second, not per frame**. A browser that throttles
 `requestAnimationFrame` — a background tab, a slow device — would otherwise run
 the open at whatever rate it happened to tick at.
 
+**Contents is a printed table, not a menu.** `Contents.tsx` sets both
+testaments side by side, each broken into its divisions, every book with its
+length — the way a bound Bible prints one. Cycling with the arrows is fine for
+browsing, but Revelation is sixty-five presses from Genesis. The list opens on
+the book you are already holding and scrolls it into view; picking one while
+reading turns straight to it, while picking from the shelf just sets it down in
+front of you, so opening stays the deliberate act it is everywhere else.
+
 **Text is paginated by measurement, not estimate.** `usePagination` lays the
 chapter out off-screen at the real column width — which a `ResizeObserver` reads
 off a live page rather than deriving from the page size — then walks the verses
@@ -97,6 +105,7 @@ carries their verse counts.
 | `←` `→` | previous / next book | turn the page |
 | `Esc` | — | close the book |
 | click | open the book | — |
+| `Contents` | turn to any of the sixty-six | turn to any of the sixty-six |
 
 Turning past the last page rolls into the next chapter, and past the last
 chapter into the next book. Below 900px the spread becomes a single page.
@@ -105,6 +114,7 @@ chapter into the next book. Below 900px the spread becomes a single page.
 
 - `components/BibleTable.tsx` — state machine, layout, chrome
 - `components/BookScene.tsx` — the book as a lit WebGL object
+- `components/Contents.tsx` — the table of contents, both testaments
 - `components/coverArt.ts` — cover and gilding painted to canvas at runtime
 - `components/pageArt.ts` — a page painted to canvas, for the leaf in motion
 - `components/Page.tsx` — a single leaf: running head, verse flow, folio
@@ -112,11 +122,11 @@ chapter into the next book. Below 900px the spread becomes a single page.
 - `lib/canon.ts` — the sixty-six books, their divisions and chapter counts
 - `lib/passage.ts` — fetching, plus the bundled Genesis 1
 
-## Known gap
+## What is not verified here
 
-Focus hand-off between the cover button and the reading controls (in
-`BibleTable.tsx`) lands reliably on the first open after a page load and
-intermittently after that — the browser's own focus reset for the
-just-disabled outgoing button races it. When it doesn't fire, focus stays on
-`<body>`, which is the default behaviour anyway; every control is still
-reachable by Tab, and the arrow and Escape keys are handled globally.
+Focus, contrast, target sizes, pagination and state transitions are all
+measured. How the motion *feels* is not: the development preview throttles
+`requestAnimationFrame` to roughly one frame a second, so the open and the page
+turn cannot be watched here. Judge those in a real browser. The numbers worth
+tuning by eye are `turnFor`, the bend peak, `turnEase`'s lift/fall split, and
+the `FAN` count and stagger — all in `BookScene.tsx`.

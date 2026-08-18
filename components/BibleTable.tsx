@@ -9,6 +9,7 @@ import { BODY_TYPE, PageFace, VerseFlow } from "./Page";
 import { useReducedMotion } from "./useReducedMotion";
 import { Chevron } from "./Chevron";
 import { drawPage } from "./pageArt";
+import Contents from "./Contents";
 import type { SceneControls } from "./BookScene";
 
 // WebGL touches document on construction, so it stays out of the server pass.
@@ -32,7 +33,9 @@ export default function BibleTable() {
   // While a leaf is crossing the gutter the scene shows the spread, not the
   // reader — the moving page has to carry its own text.
   const [turning, setTurning] = useState(false);
+  const [contentsOpen, setContentsOpen] = useState(false);
   const stageRef = useRef<SceneControls | null>(null);
+  const contentsRef = useRef<HTMLButtonElement>(null);
 
   const book = CANON[index];
   const open = phase === "opening" || phase === "reading";
@@ -78,6 +81,24 @@ export default function BibleTable() {
   const after = useCallback((ms: number, fn: () => void) => {
     timers.current.forEach(clearTimeout);
     timers.current = [setTimeout(fn, ms)];
+  }, []);
+
+  /**
+   * Hands focus back to a control after something above it unmounts. The
+   * browser resets focus to the body for the removed element on its own
+   * account, and that lands after our first attempt — so take it back once
+   * it has.
+   */
+  const restoreFocus = useCallback((to: React.RefObject<HTMLButtonElement | null>) => {
+    // Deliberately not requestAnimationFrame: a throttled tab can hold a frame
+    // callback for a second or more, and where the keyboard lands should not
+    // wait on the animation clock.
+    setTimeout(() => {
+      to.current?.focus();
+      setTimeout(() => {
+        if (document.activeElement === document.body) to.current?.focus();
+      }, 80);
+    }, 0);
   }, []);
 
   useEffect(() => () => timers.current.forEach(clearTimeout), []);
@@ -274,6 +295,9 @@ export default function BibleTable() {
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement | null)?.tagName;
       if (tag === "SELECT" || tag === "INPUT") return;
+      // The contents list handles its own keys; arrows must not cycle the
+      // shelf underneath it.
+      if (contentsOpen) return;
 
       if (phase === "shelf") {
         if (e.key === "ArrowLeft") shiftBook(-1);
@@ -288,7 +312,7 @@ export default function BibleTable() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [phase, shiftBook, turn, closeBook]);
+  }, [phase, shiftBook, turn, closeBook, contentsOpen]);
 
   /* --- Scene variables ---------------------------------------------------- */
   const scene = {
@@ -320,6 +344,8 @@ export default function BibleTable() {
         onClose={closeBook}
         onChapter={(ch) => goTo(index, ch)}
         closeRef={closeRef}
+        onContents={() => setContentsOpen(true)}
+        contentsRef={contentsRef}
       />
 
       {/* The book's name, out of focus behind the object — the way a title
@@ -384,6 +410,25 @@ export default function BibleTable() {
         />
       )}
 
+      {contentsOpen && (
+        <Contents
+          current={index}
+          onPick={(next) => {
+            setContentsOpen(false);
+            // Reading: turn straight to the book. On the shelf: set it down in
+            // front of you and let the cover restamp, so opening stays the
+            // deliberate act it is everywhere else.
+            if (phase === "reading") goTo(next, 1);
+            else setIndex(next);
+            restoreFocus(contentsRef);
+          }}
+          onClose={() => {
+            setContentsOpen(false);
+            restoreFocus(contentsRef);
+          }}
+        />
+      )}
+
       {error && phase !== "shelf" && (
         <div
           role="alert"
@@ -411,6 +456,8 @@ function Chrome({
   onClose,
   onChapter,
   closeRef,
+  onContents,
+  contentsRef,
 }: {
   phase: Phase;
   book: (typeof CANON)[number];
@@ -418,6 +465,8 @@ function Chrome({
   onClose: () => void;
   onChapter: (ch: number) => void;
   closeRef: React.Ref<HTMLButtonElement>;
+  onContents: () => void;
+  contentsRef: React.Ref<HTMLButtonElement>;
 }) {
   const reading = phase === "reading";
   const active = reading || phase === "opening";
@@ -429,6 +478,13 @@ function Chrome({
       </div>
 
       <div className="flex items-center gap-4 whitespace-nowrap md:gap-5">
+        <button
+          ref={contentsRef}
+          onClick={onContents}
+          className="label flex min-h-11 items-center px-1 text-ink-soft transition-colors hover:text-indigo"
+        >
+          Contents
+        </button>
         {reading && (
           <label className="flex items-center gap-2">
             <span className="label hidden text-ink-faint sm:inline">Chapter</span>
