@@ -10,6 +10,7 @@ import { useReducedMotion } from "./useReducedMotion";
 import { Chevron } from "./Chevron";
 import { drawPage } from "./pageArt";
 import Contents from "./Contents";
+import { BooksIcon } from "./BooksIcon";
 import type { SceneControls } from "./BookScene";
 
 // WebGL touches document on construction, so it stays out of the server pass.
@@ -399,7 +400,13 @@ export default function BibleTable() {
       </div>
 
       {phase === "shelf" || phase === "closing" ? (
-        <Shelf book={book} onShift={shiftBook} onOpen={openBook} dimmed={phase === "closing"} />
+        <Shelf
+          book={book}
+          onShift={shiftBook}
+          onOpen={openBook}
+          onContents={() => setContentsOpen(true)}
+          dimmed={phase === "closing"}
+        />
       ) : (
         <Turner
           onTurn={turn}
@@ -478,12 +485,16 @@ function Chrome({
       </div>
 
       <div className="flex items-center gap-4 whitespace-nowrap md:gap-5">
+        {/* Bordered and iconed so it cannot be mistaken for the wordmark
+            beside it, which is set in exactly the same type. */}
         <button
           ref={contentsRef}
           onClick={onContents}
-          className="label flex min-h-11 items-center px-1 text-ink-soft transition-colors hover:text-indigo"
+          aria-label="All 66 books"
+          className="label flex min-h-11 items-center gap-2 rounded-sm border border-ink/20 px-2.5 text-ink-soft transition-colors hover:border-indigo/50 hover:text-indigo"
         >
-          Contents
+          <BooksIcon className="size-3.5 shrink-0" />
+          <span className="hidden md:inline">All 66 books</span>
         </button>
         {reading && (
           <label className="flex items-center gap-2">
@@ -521,11 +532,13 @@ function Shelf({
   book,
   onShift,
   onOpen,
+  onContents,
   dimmed,
 }: {
   book: (typeof CANON)[number];
   onShift: (step: number) => void;
   onOpen: () => void;
+  onContents: () => void;
   dimmed: boolean;
 }) {
   return (
@@ -571,6 +584,18 @@ function Shelf({
         >
           Click the book to open it
         </button>
+
+        {/* The arrows imply movement but never say how far it goes, and
+            "Contents" alone does not tell you it holds the whole canon. */}
+        <div>
+          <button
+            onClick={onContents}
+            className="label pointer-events-auto inline-flex min-h-11 items-center gap-2 rounded-sm border border-ink/20 px-3.5 text-ink-soft transition-colors hover:border-indigo/50 hover:text-indigo"
+          >
+            <BooksIcon className="size-3.5 shrink-0" />
+            All 66 books
+          </button>
+        </div>
       </div>
     </div>
   );

@@ -68,7 +68,7 @@ export default function Contents({ current, onPick, onClose }: Props) {
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto overscroll-contain p-4 md:p-8">
       <button
-        aria-label="Close the contents"
+        aria-label="Close the book list"
         onClick={onClose}
         className="fixed inset-0 cursor-default bg-indigo-deep/25 backdrop-blur-[2px]"
         tabIndex={-1}
@@ -78,7 +78,7 @@ export default function Contents({ current, onPick, onClose }: Props) {
         ref={panel}
         role="dialog"
         aria-modal="true"
-        aria-label="Contents"
+        aria-label="All 66 books"
         tabIndex={-1}
         style={{ animation: "rise 380ms var(--ease-settle) both" }}
         className="relative my-auto w-full max-w-5xl overflow-hidden rounded-[3px] bg-vellum shadow-[0_30px_70px_rgba(20,26,77,0.3)] outline-none"
@@ -87,7 +87,9 @@ export default function Contents({ current, onPick, onClose }: Props) {
 
         <div className="relative px-6 py-8 md:px-12 md:py-11">
           <header className="mb-8 flex items-baseline justify-between gap-4 border-b border-ink/12 pb-4">
-            <h2 className="font-display text-2xl text-ink md:text-3xl">Contents</h2>
+            {/* Named exactly as the control that opened it. "Contents" alone
+                never said what it held. */}
+            <h2 className="font-display text-2xl text-ink md:text-3xl">All 66 books</h2>
             <button
               onClick={onClose}
               className="label flex min-h-11 items-center px-1 text-ink-soft transition-colors hover:text-indigo"

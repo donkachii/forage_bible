@@ -66,13 +66,19 @@ Animation is smoothed **per second, not per frame**. A browser that throttles
 `requestAnimationFrame` — a background tab, a slow device — would otherwise run
 the open at whatever rate it happened to tick at.
 
-**Contents is a printed table, not a menu.** `Contents.tsx` sets both
+**The book list is a printed table, not a menu.** `Contents.tsx` sets both
 testaments side by side, each broken into its divisions, every book with its
 length — the way a bound Bible prints one. Cycling with the arrows is fine for
 browsing, but Revelation is sixty-five presses from Genesis. The list opens on
 the book you are already holding and scrolls it into view; picking one while
 reading turns straight to it, while picking from the shelf just sets it down in
 front of you, so opening stays the deliberate act it is everywhere else.
+
+It is called "All 66 books" rather than "Contents" everywhere it appears — the
+control, the dialog's name, its heading. "Contents" is the right word on a
+printed page but it never says what it holds, and the header sets the wordmark
+in exactly the same type as its controls, so the button is bordered and carries
+a list glyph. A label that looks like a label does not get clicked.
 
 **Text is paginated by measurement, not estimate.** `usePagination` lays the
 chapter out off-screen at the real column width — which a `ResizeObserver` reads
@@ -105,7 +111,7 @@ carries their verse counts.
 | `←` `→` | previous / next book | turn the page |
 | `Esc` | — | close the book |
 | click | open the book | — |
-| `Contents` | turn to any of the sixty-six | turn to any of the sixty-six |
+| `All 66 books` | turn to any of the sixty-six | turn to any of the sixty-six |
 
 Turning past the last page rolls into the next chapter, and past the last
 chapter into the next book. Below 900px the spread becomes a single page.
@@ -114,7 +120,7 @@ chapter into the next book. Below 900px the spread becomes a single page.
 
 - `components/BibleTable.tsx` — state machine, layout, chrome
 - `components/BookScene.tsx` — the book as a lit WebGL object
-- `components/Contents.tsx` — the table of contents, both testaments
+- `components/Contents.tsx` — the book list, both testaments
 - `components/coverArt.ts` — cover and gilding painted to canvas at runtime
 - `components/pageArt.ts` — a page painted to canvas, for the leaf in motion
 - `components/Page.tsx` — a single leaf: running head, verse flow, folio
