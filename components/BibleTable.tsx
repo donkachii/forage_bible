@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { CANON, DIVISION_NOTE } from "@/lib/canon";
-import { OPENING, type Passage } from "@/lib/passage";
+import { OPENING, type Passage, type Verse } from "@/lib/passage";
 import { usePagination } from "./usePagination";
 import { BODY_TYPE, PageFace, VerseFlow } from "./Page";
 import { useReducedMotion } from "./useReducedMotion";
@@ -11,12 +11,35 @@ import { Chevron } from "./Chevron";
 import { drawPage } from "./pageArt";
 import Contents from "./Contents";
 import { BooksIcon } from "./BooksIcon";
-import type { SceneControls } from "./BookScene";
+import type { SceneControls, TurnArt } from "./BookScene";
 
 // WebGL touches document on construction, so it stays out of the server pass.
 const BookScene = dynamic(() => import("./BookScene"), { ssr: false });
 
 type Phase = "shelf" | "opening" | "reading" | "closing";
+
+/** Stable empty list: usePagination keys its effect on the array identity. */
+const NO_VERSES: Verse[] = [];
+
+const versesOf = (psg: Passage, page?: number[]) =>
+  (page ?? []).map((i) => psg.verses[i]).filter(Boolean);
+
+function toSpreads(pages: number[][], verses: Verse[], perSpread: number) {
+  const source = pages.length ? pages : [verses.map((_, i) => i)];
+  const out: number[][][] = [];
+  for (let i = 0; i < source.length; i += perSpread) out.push(source.slice(i, i + perSpread));
+  return out.length ? out : [[[]]];
+}
+
+/** The chapter one step away, crossing into the next book where it must. */
+function neighbour(index: number, chapter: number, step: number) {
+  if (step > 0) {
+    if (chapter < CANON[index].chapters) return { index, chapter: chapter + 1 };
+    return index < CANON.length - 1 ? { index: index + 1, chapter: 1 } : null;
+  }
+  if (chapter > 1) return { index, chapter: chapter - 1 };
+  return index > 0 ? { index: index - 1, chapter: CANON[index - 1].chapters } : null;
+}
 
 const FULL_OPEN_MS = 1150;
 const FULL_CLOSE_MS = 800;
@@ -125,20 +148,58 @@ export default function BibleTable() {
   }, []);
 
   /* --- Text --------------------------------------------------------------- */
-  const load = useCallback(async (name: string, ch: number) => {
-    setLoading(true);
-    setError(null);
+  // Chapters never change, so once fetched one is kept. The route is already
+  // immutable-cached; this saves the round trip as well.
+  const cache = useRef(new Map<string, Passage>());
+  const [neighbours, setNeighbours] = useState<{ prev: Passage | null; next: Passage | null }>({
+    prev: null,
+    next: null,
+  });
+
+  const pull = useCallback(async (name: string, ch: number): Promise<Passage | null> => {
+    const key = `${name}|${ch}`;
+    const held = cache.current.get(key);
+    if (held) return held;
     try {
       const res = await fetch(`/api/passage?book=${encodeURIComponent(name)}&chapter=${ch}`);
       const body = await res.json();
-      if (!res.ok) throw new Error(body.error ?? `Request failed (${res.status})`);
-      setPassage(body as Passage);
+      if (!res.ok) return null;
+      cache.current.set(key, body as Passage);
+      return body as Passage;
     } catch {
-      setError("The text didn’t load. Check your connection, then try again.");
-    } finally {
-      setLoading(false);
+      return null;
     }
   }, []);
+
+  const load = useCallback(
+    async (name: string, ch: number) => {
+      setLoading(true);
+      setError(null);
+      const got = await pull(name, ch);
+      if (got) setPassage(got);
+      else setError("The text didn’t load. Check your connection, then try again.");
+      setLoading(false);
+    },
+    [pull],
+  );
+
+  // Fetch what this chapter can turn into, so a leaf crossing a boundary has
+  // the neighbour's text ready to carry rather than stalling the gesture.
+  useEffect(() => {
+    if (phase !== "reading") return;
+    let alive = true;
+    const back = neighbour(index, chapter, -1);
+    const on = neighbour(index, chapter, 1);
+    void Promise.all([
+      back ? pull(CANON[back.index].name, back.chapter) : null,
+      on ? pull(CANON[on.index].name, on.chapter) : null,
+    ]).then(([prev, next]) => {
+      if (alive) setNeighbours({ prev, next });
+    });
+    return () => {
+      alive = false;
+    };
+  }, [phase, index, chapter, pull]);
 
   const goTo = useCallback(
     (bookIdx: number, ch: number, atEnd = false) => {
@@ -200,16 +261,27 @@ export default function BibleTable() {
     return () => observer.disconnect();
   }, []);
 
-  const { measurer, pages } = usePagination(passage.verses, column.w, column.h);
+  // Three chapters are measured at once: the one being read, and the two it
+  // can turn into. A leaf crossing a chapter boundary carries the neighbour's
+  // text on its back, so that text has to be paginated before the turn starts.
+  const layoutHere = usePagination(passage.verses, column.w, column.h);
+  const layoutBefore = usePagination(neighbours.prev?.verses ?? NO_VERSES, column.w, column.h);
+  const layoutAfter = usePagination(neighbours.next?.verses ?? NO_VERSES, column.w, column.h);
 
-  const spreads = useMemo(() => {
-    const source = pages.length ? pages : [passage.verses.map((_, i) => i)];
-    const out: number[][][] = [];
-    for (let i = 0; i < source.length; i += perSpread) {
-      out.push(source.slice(i, i + perSpread));
-    }
-    return out.length ? out : [[[]]];
-  }, [pages, perSpread, passage.verses]);
+  const spreads = useMemo(
+    () => toSpreads(layoutHere.pages, passage.verses, perSpread),
+    [layoutHere.pages, passage.verses, perSpread],
+  );
+  // A neighbour is only usable once actually measured; the un-paginated
+  // fallback would hand back one impossibly long spread.
+  const spreadsBefore = useMemo(
+    () => (layoutBefore.pages.length ? toSpreads(layoutBefore.pages, NO_VERSES, perSpread) : null),
+    [layoutBefore.pages, perSpread],
+  );
+  const spreadsAfter = useMemo(
+    () => (layoutAfter.pages.length ? toSpreads(layoutAfter.pages, NO_VERSES, perSpread) : null),
+    [layoutAfter.pages, perSpread],
+  );
 
   // Re-measuring can leave fewer spreads than the leaf we are sitting on —
   // a resize mid-chapter, or the webfont landing after the first pass. Every
@@ -217,20 +289,20 @@ export default function BibleTable() {
   // claim to be on page 3 of 2 while the pages settle.
   const currentLeaf = Math.min(leaf, spreads.length - 1);
   const spread = spreads[currentLeaf] ?? [[]];
-  const versesOn = (page?: number[]) => (page ?? []).map((i) => passage.verses[i]).filter(Boolean);
+  const versesOn = (page?: number[]) => versesOf(passage, page);
 
   const atStart = currentLeaf === 0;
   const atEnd = currentLeaf >= spreads.length - 1;
   const firstBook = index === 0 && chapter === 1;
   const lastBook = index === CANON.length - 1 && chapter === book.chapters;
 
-  /** Paints one page of the chapter at the size the scene draws it. */
+  /** Paints one page of any chapter at the size the scene draws it. */
   const paint = useCallback(
-    (page: number[] | undefined, side: "verso" | "recto", folio: number) =>
+    (psg: Passage, page: number[] | undefined, side: "verso" | "recto", folio: number) =>
       drawPage({
-        verses: versesOn(page),
-        chapter: passage.chapter,
-        book: book.name,
+        verses: versesOf(psg, page),
+        chapter: psg.chapter,
+        book: psg.book,
         folio,
         side,
         width: dims.pw,
@@ -240,56 +312,209 @@ export default function BibleTable() {
           : "Garamond, serif",
         showChrome: (page ?? []).length > 0,
       }),
-    // versesOn closes over the current passage, which the deps already track.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [passage, book.name, dims.pw, dims.ph],
+    [dims.pw, dims.ph],
+  );
+
+  /**
+   * Works out what a turn in this direction would move, without moving it.
+   * Both the arrows and a dragged page run through here, so a turn is defined
+   * in one place and only the way it is driven differs.
+   *
+   * Returns null when the scene cannot carry it — reduced motion, or a
+   * neighbouring chapter that has not arrived yet — and the caller cuts.
+   */
+  const planTurn = useCallback(
+    (step: number): { art: TurnArt; forward: boolean; commit: () => void } | null => {
+      if (!stageRef.current || reduced || dims.single) return null;
+      const forward = step > 0;
+      const nextLeaf = currentLeaf + step;
+      const folio = (l: number, recto: boolean) => l * 2 + (recto ? 2 : 1);
+
+      // Within the chapter: the recto you are on lifts, its reverse is the new
+      // verso, and the new recto is already lying underneath. Backward mirrors.
+      if (nextLeaf >= 0 && nextLeaf < spreads.length) {
+        const from = spreads[currentLeaf] ?? [];
+        const to = spreads[nextLeaf] ?? [];
+        const art = forward
+          ? {
+              front: paint(passage, from[1], "recto", folio(currentLeaf, true)),
+              back: paint(passage, to[0], "verso", folio(nextLeaf, false)),
+              under: {
+                left: paint(passage, from[0], "verso", folio(currentLeaf, false)),
+                right: paint(passage, to[1], "recto", folio(nextLeaf, true)),
+              },
+            }
+          : {
+              front: paint(passage, to[1], "recto", folio(nextLeaf, true)),
+              back: paint(passage, from[0], "verso", folio(currentLeaf, false)),
+              under: {
+                left: paint(passage, to[0], "verso", folio(nextLeaf, false)),
+                right: paint(passage, from[1], "recto", folio(currentLeaf, true)),
+              },
+            };
+        return { art, forward, commit: () => setLeaf(nextLeaf) };
+      }
+
+      // Across a chapter boundary, the leaf spans two chapters at once.
+      const hop = neighbour(index, chapter, step);
+      const psg = forward ? neighbours.next : neighbours.prev;
+      const side = forward ? spreadsAfter : spreadsBefore;
+      if (!hop || !psg || !side?.length) return null;
+
+      const from = spreads[currentLeaf] ?? [];
+      const landing = forward ? 0 : side.length - 1;
+      const to = side[landing] ?? [];
+      const art = forward
+        ? {
+            front: paint(passage, from[1], "recto", folio(currentLeaf, true)),
+            back: paint(psg, to[0], "verso", folio(landing, false)),
+            under: {
+              left: paint(passage, from[0], "verso", folio(currentLeaf, false)),
+              right: paint(psg, to[1], "recto", folio(landing, true)),
+            },
+          }
+        : {
+            front: paint(psg, to[1], "recto", folio(landing, true)),
+            back: paint(passage, from[0], "verso", folio(currentLeaf, false)),
+            under: {
+              left: paint(psg, to[0], "verso", folio(landing, false)),
+              right: paint(passage, from[1], "recto", folio(currentLeaf, true)),
+            },
+          };
+      // Backward lands on the previous chapter's last page, which the leaf
+      // clamp already resolves once the new chapter is measured.
+      return { art, forward, commit: () => goTo(hop.index, hop.chapter, !forward) };
+    },
+    [
+      reduced, dims.single, currentLeaf, spreads, passage, paint, index, chapter,
+      neighbours.next, neighbours.prev, spreadsAfter, spreadsBefore, goTo,
+    ],
+  );
+
+  /** The plain cut, for when the scene cannot carry the turn. */
+  const jump = useCallback(
+    (step: number) => {
+      const nextLeaf = currentLeaf + step;
+      if (nextLeaf >= 0 && nextLeaf < spreads.length) {
+        setLeaf(nextLeaf);
+        return;
+      }
+      const hop = neighbour(index, chapter, step);
+      if (hop) goTo(hop.index, hop.chapter, step < 0);
+    },
+    [currentLeaf, spreads.length, index, chapter, goTo],
   );
 
   const turn = useCallback(
     (step: number) => {
       if (phase !== "reading" || turning) return;
-      const next = currentLeaf + step;
-      if (next >= 0 && next < spreads.length) {
-        const scene = stageRef.current;
-        // Within a chapter the leaf is a real object, so run it across before
-        // the text changes underneath. Everything else is a jump cut anyway.
-        if (!scene || reduced || dims.single) {
-          setLeaf(next);
-          return;
-        }
-        const forward = step > 0;
-        const from = spreads[currentLeaf] ?? [];
-        const to = spreads[next] ?? [];
-        // Forward: the recto you were on lifts, its reverse is the new verso,
-        // and the new recto is already lying underneath. Backward mirrors it.
-        const art = forward
-          ? {
-              front: paint(from[1], "recto", currentLeaf * 2 + 2),
-              back: paint(to[0], "verso", next * 2 + 1),
-              under: { left: paint(from[0], "verso", currentLeaf * 2 + 1), right: paint(to[1], "recto", next * 2 + 2) },
-            }
-          : {
-              front: paint(to[1], "recto", next * 2 + 2),
-              back: paint(from[0], "verso", currentLeaf * 2 + 1),
-              under: { left: paint(to[0], "verso", next * 2 + 1), right: paint(from[1], "recto", currentLeaf * 2 + 2) },
-            };
-        setTurning(true);
-        void scene.turn(art, forward).then(() => {
-          setLeaf(next);
-          setTurning(false);
-        });
+      const scene = stageRef.current;
+      const plan = planTurn(step);
+      if (!scene || !plan) {
+        jump(step);
         return;
       }
-      if (step > 0) {
-        if (chapter < book.chapters) goTo(index, chapter + 1);
-        else if (index < CANON.length - 1) goTo(index + 1, 1);
-        return;
-      }
-      if (chapter > 1) goTo(index, chapter - 1, true);
-      else if (index > 0) goTo(index - 1, CANON[index - 1].chapters, true);
+      setTurning(true);
+      void scene.turn(plan.art, plan.forward).then(() => {
+        plan.commit();
+        setTurning(false);
+      });
     },
-    [phase, currentLeaf, spreads, chapter, book.chapters, index, goTo, turning, reduced, dims.single, paint],
+    [phase, turning, planTurn, jump],
   );
+
+  /* --- Dragging a page ---------------------------------------------------- */
+  /**
+   * The leaf pivots at the spine and its free edge sweeps a half circle, so
+   * the pointer maps to the *angle*, not to a linear distance across the page.
+   * Anything linear makes the page lag the cursor badly near the extremes.
+   */
+  const progressAt = (clientX: number, spine: number, width: number, forward: boolean) => {
+    const across = Math.min(1, Math.max(-1, (clientX - spine) / width));
+    const raw = Math.acos(across) / Math.PI; // edge right → 0, spine → ½, left → 1
+    return forward ? raw : 1 - raw;
+  };
+
+  const spreadRef = useRef<HTMLDivElement>(null);
+  const held = useRef<{
+    id: number;
+    commit: () => void;
+    forward: boolean;
+    spine: number;
+    width: number;
+    trail: { x: number; t: number }[];
+    p: number;
+  } | null>(null);
+
+  const takePage = useCallback(
+    (e: React.PointerEvent, forward: boolean) => {
+      if (phase !== "reading" || turning || held.current) return;
+      const host = spreadRef.current;
+      const scene = stageRef.current;
+      if (!host || !scene) return;
+      const plan = planTurn(forward ? 1 : -1);
+      if (!plan) return; // no scene, reduced motion, or a neighbour still loading
+
+      const box = host.getBoundingClientRect();
+      const spine = box.left + box.width / 2;
+      const p = progressAt(e.clientX, spine, dims.pw, plan.forward);
+
+      // Capture keeps a drag tracking after it leaves the handle. It can be
+      // refused, and the turn should still work if it is.
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId);
+      } catch {
+        /* not fatal — the handlers are on the element either way */
+      }
+      setTurning(true);
+      scene.grab(plan.art, plan.forward);
+      scene.drag(p);
+      held.current = {
+        id: e.pointerId,
+        commit: plan.commit,
+        forward: plan.forward,
+        spine,
+        width: dims.pw,
+        trail: [{ x: e.clientX, t: performance.now() }],
+        p,
+      };
+    },
+    [phase, turning, planTurn, dims.pw],
+  );
+
+  const movePage = useCallback((e: React.PointerEvent) => {
+    const grip = held.current;
+    if (!grip || grip.id !== e.pointerId) return;
+    grip.p = progressAt(e.clientX, grip.spine, grip.width, grip.forward);
+    grip.trail.push({ x: e.clientX, t: performance.now() });
+    if (grip.trail.length > 8) grip.trail.shift();
+    stageRef.current?.drag(grip.p);
+  }, []);
+
+  const dropPage = useCallback((e: React.PointerEvent) => {
+    const grip = held.current;
+    if (!grip || grip.id !== e.pointerId) return;
+    held.current = null;
+    const scene = stageRef.current;
+    if (!scene) {
+      setTurning(false);
+      return;
+    }
+
+    // Velocity in progress per second, measured over the last stretch of
+    // travel — the scene decides in its own units and never sees pixels.
+    const now = performance.now();
+    const from = grip.trail.find((s) => now - s.t < 90) ?? grip.trail[0];
+    const seconds = Math.max(16, now - from.t) / 1000;
+    const travelled =
+      progressAt(e.clientX, grip.spine, grip.width, grip.forward) -
+      progressAt(from.x, grip.spine, grip.width, grip.forward);
+
+    void scene.release(grip.p, travelled / seconds).then((completed) => {
+      if (completed) grip.commit();
+      setTurning(false);
+    });
+  }, []);
 
   /* --- Keyboard ----------------------------------------------------------- */
   useEffect(() => {
@@ -387,17 +612,32 @@ export default function BibleTable() {
         reduced={reduced}
         turning={turning}
         controlsRef={stageRef}
+        spreadRef={spreadRef}
+        onGrab={takePage}
+        onDragMove={movePage}
+        onDrop={dropPage}
       />
 
-      {/* Off-screen twin of the chapter, set at the real column width. */}
-      <div
-        ref={measurer}
-        aria-hidden
-        className={`pointer-events-none invisible absolute -top-[9999px] left-0 ${BODY_TYPE}`}
-        style={{ width: column.w || 1 }}
-      >
-        <VerseFlow verses={passage.verses} chapter={passage.chapter} />
-      </div>
+      {/* Off-screen twins: the chapter being read, and the two it can turn
+          into. A leaf crossing a boundary needs the neighbour already
+          measured, so all three are laid out at the real column width. */}
+      {(
+        [
+          [layoutHere.measurer, passage] as const,
+          [layoutBefore.measurer, neighbours.prev] as const,
+          [layoutAfter.measurer, neighbours.next] as const,
+        ] as const
+      ).map(([ref, psg], i) => (
+        <div
+          key={i}
+          ref={ref}
+          aria-hidden
+          className={`pointer-events-none invisible absolute -top-[9999px] left-0 ${BODY_TYPE}`}
+          style={{ width: column.w || 1 }}
+        >
+          {psg && <VerseFlow verses={psg.verses} chapter={psg.chapter} />}
+        </div>
+      ))}
 
       {phase === "shelf" || phase === "closing" ? (
         <Shelf
@@ -663,6 +903,10 @@ type SceneProps = {
   reduced: boolean;
   turning: boolean;
   controlsRef: React.RefObject<SceneControls | null>;
+  spreadRef: React.Ref<HTMLDivElement>;
+  onGrab: (e: React.PointerEvent, forward: boolean) => void;
+  onDragMove: (e: React.PointerEvent) => void;
+  onDrop: (e: React.PointerEvent) => void;
 };
 
 function Scene({
@@ -684,6 +928,10 @@ function Scene({
   reduced,
   turning,
   controlsRef,
+  spreadRef,
+  onGrab,
+  onDragMove,
+  onDrop,
 }: SceneProps) {
   // The moving leaf lives in the scene, so the reader stands aside for it.
   const showText = reading && !turning;
@@ -733,6 +981,7 @@ function Scene({
         {/* Reading is a flat activity. Every dimensional trick lives in the
             scene above; here the text just needs to sit still and be read. */}
         <div
+          ref={spreadRef}
           aria-hidden={!showText}
           className="absolute top-1/2 left-1/2 flex -translate-x-1/2 -translate-y-1/2 rounded-[3px] p-[6px]"
           style={{
@@ -769,6 +1018,27 @@ function Scene({
               bodyRef={bodyRef}
             />
           </div>
+
+          {/* You grab a page by its outer edge, not by its middle — which is
+              also what keeps the text underneath selectable. Pointer events so
+              mouse and touch are one path; capture so a drag that leaves the
+              handle still tracks. */}
+          {!single &&
+            ([
+              ["left-0 rounded-l-[3px]", false] as const,
+              ["right-0 rounded-r-[3px]", true] as const,
+            ] as const).map(([edge, forward]) => (
+              <div
+                key={edge}
+                aria-hidden
+                onPointerDown={(e) => onGrab(e, forward)}
+                onPointerMove={onDragMove}
+                onPointerUp={onDrop}
+                onPointerCancel={onDrop}
+                className={`absolute inset-y-0 cursor-grab active:cursor-grabbing ${edge}`}
+                style={{ width: "calc(var(--pw) * 0.28)", touchAction: "none" }}
+              />
+            ))}
         </div>
 
         {/* The book is a canvas, so the affordance is a real button laid over

@@ -29,8 +29,18 @@ export type TurnArt = {
 };
 
 export type SceneControls = {
-  /** Runs one leaf across the gutter. Resolves when it has landed. */
+  /** Runs one leaf across the gutter on a clock. Resolves when it lands. */
   turn: (art: TurnArt, forward: boolean) => Promise<void>;
+  /** Takes hold of a leaf so a pointer can carry it. */
+  grab: (art: TurnArt, forward: boolean) => void;
+  /** Where the leaf is, 0 lying still to 1 fully over. */
+  drag: (progress: number) => void;
+  /**
+   * Lets go. Velocity is in progress per second — the caller converts from
+   * pixels, so the scene never has to know about screen coordinates.
+   * Resolves true if the turn completed, false if the page fell back.
+   */
+  release: (progress: number, velocity: number) => Promise<boolean>;
 };
 
 type Props = {
@@ -301,12 +311,18 @@ export default function BookScene({
     let raf = 0;
     let lastFrame = performance.now();
 
-    // A turn runs on its own clock, independent of the open/shut spring.
+    // A turn runs either on its own clock or under a finger. Dragging ignores
+    // the clock entirely: progress is whatever the pointer last said.
+    type TurnMode = "idle" | "timed" | "dragging" | "settling";
+    let turnMode: TurnMode = "idle";
     let turnAt = 0;
     let turnFor = 0;
     let turnFwd = true;
+    let turnP = 0;
+    let settleFrom = 0;
+    let settleTo = 0;
     let spreadPainted = false;
-    let onLanded: (() => void) | null = null;
+    let onLanded: ((completed: boolean) => void) | null = null;
 
     const ease = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
 
@@ -377,34 +393,50 @@ export default function BookScene({
       const spreadUp = spreadPainted && openness > 0.98;
       underLeft.mesh.visible = spreadUp;
       underRight.mesh.visible = spreadUp;
-      leafPivot.visible = spreadUp && turnFor > 0;
+      leafPivot.visible = spreadUp && turnMode !== "idle";
 
       /* --- A leaf crossing the gutter ------------------------------------ */
-      if (turnFor > 0) {
-        const p = Math.min(1, (now - turnAt) / turnFor);
-        const t = turnEase(p);
-        const angle = turnFwd ? Math.PI * t : Math.PI * (1 - t);
+      if (turnMode !== "idle") {
+        let done = false;
+        let completed = true;
+
+        if (turnMode === "timed") {
+          const clock = Math.min(1, (now - turnAt) / turnFor);
+          turnP = turnEase(clock);
+          done = clock >= 1;
+        } else if (turnMode === "settling") {
+          const clock = Math.min(1, (now - turnAt) / turnFor);
+          // Ease only the remaining distance, so a release at 0.95 does not
+          // crawl back through the whole curve.
+          turnP = settleFrom + (settleTo - settleFrom) * turnEase(clock);
+          done = clock >= 1;
+          completed = settleTo === 1;
+        }
+        // "dragging" leaves turnP exactly where the pointer put it.
+
+        const angle = turnFwd ? Math.PI * turnP : Math.PI * (1 - turnP);
         leafPivot.rotation.y = angle;
         // The leaf is most curled while it is being lifted and relaxes as it
         // falls, so the peak sits before the half-way point rather than on it.
-        bend.value = Math.sin(Math.pow(p, 0.78) * Math.PI) * 0.17;
+        bend.value = Math.sin(Math.pow(turnP, 0.78) * Math.PI) * 0.17;
         // Past upright, the far side is the one facing the reader.
         leafFront.mesh.visible = angle < Math.PI / 2;
         leafBack.mesh.visible = angle >= Math.PI / 2;
 
-        if (p >= 1) {
-          turnFor = 0;
+        if (done) {
+          turnMode = "idle";
           bend.value = 0;
-          const done = onLanded;
+          const land = onLanded;
           onLanded = null;
-          done?.();
+          land?.(completed);
         }
       }
 
       // Behind the reader and finished moving, there is nothing new to draw.
       // A few frames of grace first: resizing the canvas clears it, so going
       // idle the instant we settle can leave a blank buffer on screen.
-      const settled = openness === target && Math.abs(frameTarget - framePx) < 0.5 && turnFor === 0;
+      const settled =
+        openness === target && Math.abs(frameTarget - framePx) < 0.5 && turnMode === "idle";
       if (!live && settled) {
         if (idle++ > 2) return;
       } else {
@@ -430,25 +462,88 @@ export default function BookScene({
       slot.tex.needsUpdate = true;
     };
 
+    /** Lays out the four faces a turn moves between. */
+    const stage = (art: TurnArt, forward: boolean) => {
+      paint(underLeft, art.under.left);
+      paint(underRight, art.under.right);
+      paint(leafFront, art.front);
+      paint(leafBack, art.back);
+      spreadPainted = true;
+      turnFwd = forward;
+      turnP = 0;
+      leafPivot.rotation.y = forward ? 0 : Math.PI;
+      idle = 0;
+    };
+
+    /**
+     * The leaf comes to rest on top of a page it now duplicates, so fold it
+     * into the spread and retire it — the reader then fades in over a matching
+     * image rather than over bare paper.
+     *
+     * Which page it duplicates depends on where it stopped. Completed, it
+     * covers the far side; abandoned, it fell back over the side it started
+     * on, and that page has to be put back.
+     */
+    const land = (art: TurnArt, forward: boolean, completed: boolean) => {
+      if (completed) paint(forward ? underLeft : underRight, forward ? art.back : art.front);
+      else paint(forward ? underRight : underLeft, forward ? art.front : art.back);
+    };
+
+    let heldArt: TurnArt | null = null;
+    let heldFwd = true;
+
     controlsRef.current = {
       turn: (art, forward) =>
         new Promise((resolve) => {
-          paint(underLeft, art.under.left);
-          paint(underRight, art.under.right);
-          paint(leafFront, art.front);
-          paint(leafBack, art.back);
-          spreadPainted = true;
-          leafPivot.rotation.y = forward ? 0 : Math.PI;
-          idle = 0;
-          turnFwd = forward;
+          stage(art, forward);
+          turnMode = "timed";
           turnAt = performance.now();
           turnFor = instant ? 1 : 620;
-          onLanded = () => {
-            // The leaf has landed on top of a page it now duplicates. Fold it
-            // into the spread, so the reader fades in over a matching image
-            // instead of over bare paper.
-            paint(forward ? underLeft : underRight, forward ? art.back : art.front);
+          onLanded = (completed) => {
+            land(art, forward, completed);
             resolve();
+          };
+        }),
+
+      grab: (art, forward) => {
+        stage(art, forward);
+        heldArt = art;
+        heldFwd = forward;
+        turnMode = "dragging";
+      },
+
+      drag: (progress) => {
+        if (turnMode !== "dragging") return;
+        turnP = Math.min(1, Math.max(0, progress));
+        idle = 0;
+      },
+
+      release: (progress, velocity) =>
+        new Promise((resolve) => {
+          const art = heldArt;
+          if (turnMode !== "dragging" || !art) {
+            resolve(false);
+            return;
+          }
+          const forward = heldFwd;
+          heldArt = null;
+
+          const p = Math.min(1, Math.max(0, progress));
+          // A flick carries the page whether or not it got past halfway —
+          // throwing a page is a different gesture from placing one.
+          const flicked = Math.abs(velocity) > 1.6;
+          settleTo = flicked ? (velocity > 0 ? 1 : 0) : p > 0.5 ? 1 : 0;
+          settleFrom = p;
+          turnP = p;
+          turnMode = "settling";
+          turnAt = performance.now();
+          // Only the distance still to travel, or a release near the end
+          // takes as long as one from the middle.
+          turnFor = instant ? 1 : Math.max(130, 430 * Math.abs(settleTo - p));
+          idle = 0;
+          onLanded = (completed) => {
+            land(art, forward, completed);
+            resolve(completed);
           };
         }),
     };
@@ -458,7 +553,11 @@ export default function BookScene({
         target = v ? 1 : 0;
         instant = immediate;
         // A shut book has no spread; the per-frame guard does the hiding.
-        if (!v) spreadPainted = false;
+        if (!v) {
+          spreadPainted = false;
+          turnMode = "idle";
+          onLanded = null;
+        }
       },
       setBook: (name) => {
         const next = drawCover(name);
