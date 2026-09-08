@@ -47,6 +47,7 @@ export function PageFace({ side, book, chapter, verses, folio, bodyRef }: PagePr
   const first = verses[0]?.verse;
   const last = verses[verses.length - 1]?.verse;
   const range = first ? (first === last ? `${chapter}:${first}` : `${chapter}:${first}–${last}`) : "";
+  const empty = verses.length === 0;
 
   return (
     <div
@@ -71,23 +72,33 @@ export function PageFace({ side, book, chapter, verses, folio, bodyRef }: PagePr
       />
 
       {/* A leaf the chapter ran out before reaching is simply blank paper —
-          no running head, no folio, the way a binder leaves it. */}
-      {verses.length > 0 && (
-        <header className="relative mb-[4%] flex shrink-0 items-baseline justify-between border-b border-ink/12 pb-[2.5%]">
-          <span className="label text-ink-soft">{side === "verso" ? book : range}</span>
-          <span className="label text-ink-faint">{side === "verso" ? range : book}</span>
-        </header>
-      )}
+          no running head, no folio, the way a binder leaves it. Hidden rather
+          than removed: the body below is the paginator's ruler, and a ruler
+          that grows on a blank leaf measures a page the chapter then can't
+          fill, which changes which leaves are blank. */}
+      <header
+        className={[
+          "relative mb-[4%] flex shrink-0 items-baseline justify-between border-b border-ink/12 pb-[2.5%]",
+          empty && "invisible",
+        ]
+          .filter(Boolean)
+          .join(" ")}
+      >
+        <span className="label text-ink-soft">{side === "verso" ? book : range}</span>
+        <span className="label text-ink-faint">{side === "verso" ? range : book}</span>
+      </header>
 
       <div ref={bodyRef} className={`relative min-h-0 flex-1 ${BODY_TYPE}`}>
         <VerseFlow verses={verses} chapter={chapter} />
       </div>
 
-      {verses.length > 0 && (
-        <footer className="relative mt-[3%] shrink-0 text-center">
-          <span className="font-display text-[0.75rem] text-ink-faint tabular-nums">{folio}</span>
-        </footer>
-      )}
+      <footer
+        className={["relative mt-[3%] shrink-0 text-center", empty && "invisible"]
+          .filter(Boolean)
+          .join(" ")}
+      >
+        <span className="font-display text-[0.75rem] text-ink-faint tabular-nums">{folio}</span>
+      </footer>
     </div>
   );
 }
