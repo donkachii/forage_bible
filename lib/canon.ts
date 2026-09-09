@@ -107,3 +107,18 @@ export const bookIndex = (name: string) =>
   CANON.findIndex((b) => b.name.toLowerCase() === name.toLowerCase());
 
 export const findBook = (name: string) => CANON[bookIndex(name)];
+
+/** Chapters lying before each book, so a place in the canon is one number. */
+export const CHAPTERS_BEFORE = CANON.map((_, i) =>
+  CANON.slice(0, i).reduce((n, b) => n + b.chapters, 0),
+);
+
+export const TOTAL_CHAPTERS = CHAPTERS_BEFORE[CANON.length - 1] + CANON[CANON.length - 1].chapters;
+
+/**
+ * How far through the whole book a chapter sits, 0 at Genesis 1 and 1 at the
+ * end of Revelation. The paper has to move from the right hand to the left as
+ * you read, and this is the only thing that says how much.
+ */
+export const wayThrough = (index: number, chapter: number) =>
+  (CHAPTERS_BEFORE[index] + chapter - 1) / TOTAL_CHAPTERS;

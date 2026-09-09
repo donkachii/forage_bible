@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
-import { CANON, DIVISION_NOTE } from "@/lib/canon";
+import { CANON, DIVISION_NOTE, wayThrough } from "@/lib/canon";
 import { OPENING, type Passage, type Verse } from "@/lib/passage";
 import { usePagination } from "./usePagination";
 import { BODY_TYPE, PageFace, VerseFlow } from "./Page";
@@ -16,7 +16,32 @@ import type { SceneControls, TurnArt } from "./BookScene";
 // WebGL touches document on construction, so it stays out of the server pass.
 const BookScene = dynamic(() => import("./BookScene"), { ssr: false });
 
-type Phase = "shelf" | "opening" | "reading" | "closing";
+/**
+ * "pulling" is the drag-open: the cover is under a hand and has no timeline of
+ * its own, so it ends when the gesture does rather than on a timer.
+ */
+type Phase = "shelf" | "pulling" | "opening" | "reading" | "closing";
+
+/** A pointer sample, for working out how fast something was thrown. */
+type Sample = { x: number; t: number };
+
+/**
+ * One end of a turn: a chapter, its pagination, and where in it we are. A turn
+ * within a chapter has the same passage on both ends; one across a boundary
+ * does not, which is the only reason this has to be spelled out.
+ */
+type Side = { psg: Passage; pages: number[][][]; leaf: number };
+
+/**
+ * Speed in progress-per-second over the last stretch of travel, so a throw
+ * reads as a throw. `map` converts a screen x to whatever progress the caller
+ * measures in — the scene itself never sees pixels.
+ */
+function velocityOf(trail: Sample[], now: number, x: number, map: (x: number) => number) {
+  const from = trail.find((s) => now - s.t < 90) ?? trail[0];
+  const seconds = Math.max(16, now - from.t) / 1000;
+  return (map(x) - map(from.x)) / seconds;
+}
 
 /** Stable empty list: usePagination keys its effect on the array identity. */
 const NO_VERSES: Verse[] = [];
@@ -41,6 +66,16 @@ function neighbour(index: number, chapter: number, step: number) {
   return index > 0 ? { index: index - 1, chapter: CANON[index - 1].chapters } : null;
 }
 
+/**
+ * Folios run per chapter, and a spread carries two leaves on a desktop but
+ * only one on a phone — so the number a page shows depends on the layout.
+ */
+const folioOf = (leaf: number, recto: boolean, perSpread: number) =>
+  perSpread === 2 ? leaf * 2 + (recto ? 2 : 1) : leaf + 1;
+
+/** How much smaller BookScene frames the shut book than the open spread. */
+const SHUT_FRAMING = 0.62;
+
 const FULL_OPEN_MS = 1150;
 const FULL_CLOSE_MS = 800;
 const PAGE_RATIO = 1.38;
@@ -63,6 +98,9 @@ export default function BibleTable() {
 
   const book = CANON[index];
   const open = phase === "opening" || phase === "reading";
+  // A pull is not "open" — the scene's target stays shut so no effect can
+  // stomp on the hand — but the room should react to it as though it were.
+  const lifting = open || phase === "pulling";
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
 
   const reduced = useReducedMotion();
@@ -80,7 +118,7 @@ export default function BibleTable() {
     cameFrom.current = phase;
     // Only on a completed transition, so this never steals focus on load.
     const target =
-      previous === "opening" && phase === "reading"
+      (previous === "opening" || previous === "pulling") && phase === "reading"
         ? closeRef.current
         : previous === "closing" && phase === "shelf"
           ? openRef.current
@@ -102,10 +140,18 @@ export default function BibleTable() {
    * previous one still had pending, so a close part-way through an open can
    * never be overruled by the open's own timer landing late.
    */
-  const after = useCallback((ms: number, fn: () => void) => {
+  const clearTimers = useCallback(() => {
     timers.current.forEach(clearTimeout);
-    timers.current = [setTimeout(fn, ms)];
+    timers.current = [];
   }, []);
+
+  const after = useCallback(
+    (ms: number, fn: () => void) => {
+      clearTimers();
+      timers.current = [setTimeout(fn, ms)];
+    },
+    [clearTimers],
+  );
 
   /**
    * Hands focus back to a control after something above it unmounts. The
@@ -220,14 +266,27 @@ export default function BibleTable() {
   /* --- Opening and closing ------------------------------------------------ */
   // Either transition can be caught mid-flight and reversed, so an impatient
   // click during the animation is answered instead of dropped.
-  const openBook = useCallback(() => {
-    if (phase === "opening" || phase === "reading") return;
-    setPhase("opening");
+  /**
+   * Everything an open needs except a timeline. The click path follows it with
+   * a timer; the drag path lets the gesture decide, so this is the half they
+   * genuinely share — and calling it as the pull *starts* is what gives the
+   * spread time to be painted before the cover lands on it.
+   */
+  const beginOpening = useCallback(() => {
     setLeaf(0);
-    void load(book.name, 1);
     setChapter(1);
+    void load(book.name, 1);
+  }, [book.name, load]);
+
+  const openBook = useCallback(() => {
+    // A pull ends in a click as well as a pointerup. Its own release decides
+    // where the book lands, a frame or more later — so the phase is still
+    // "pulling" when that click arrives, and this is what swallows it.
+    if (phase === "opening" || phase === "reading" || phase === "pulling") return;
+    setPhase("opening");
+    beginOpening();
     after(OPEN_MS, () => setPhase("reading"));
-  }, [phase, book.name, load, after, OPEN_MS]);
+  }, [phase, beginOpening, after, OPEN_MS]);
 
   const closeBook = useCallback(() => {
     if (phase === "closing" || phase === "shelf") return;
@@ -325,34 +384,56 @@ export default function BibleTable() {
    */
   const planTurn = useCallback(
     (step: number): { art: TurnArt; forward: boolean; commit: () => void } | null => {
-      if (!stageRef.current || reduced || dims.single) return null;
+      if (!stageRef.current || reduced) return null;
       const forward = step > 0;
       const nextLeaf = currentLeaf + step;
-      const folio = (l: number, recto: boolean) => l * 2 + (recto ? 2 : 1);
+
+      /** One page of one side, or bare vellum where the chapter runs out. */
+      const face = (s: Side, l: number, slot: number) =>
+        paint(s.psg, s.pages[l]?.[slot], slot === 1 ? "recto" : "verso", folioOf(l, slot === 1, perSpread));
+
+      /**
+       * The four faces a turn moves between: the leaf's own two sides, and
+       * what is left lying either side of it.
+       *
+       * With two pages to a spread the leaf is the recto you were reading
+       * backed by the verso you are turning to. With one, each page is its own
+       * leaf — a deliberate departure from paper, where a leaf would carry two
+       * pages and the one you read would alternate sides of the spine. Here
+       * the page being read is always the centred right-hand slot.
+       */
+      const artFor = (from: Side, to: Side): TurnArt => {
+        if (perSpread === 1) {
+          const here = face(from, from.leaf, 0);
+          const there = face(to, to.leaf, 0);
+          return forward
+            ? { front: here, back: there, under: { left: face(from, from.leaf - 1, 0), right: there } }
+            : { front: there, back: here, under: { left: face(to, to.leaf - 1, 0), right: there } };
+        }
+        return forward
+          ? {
+              front: face(from, from.leaf, 1),
+              back: face(to, to.leaf, 0),
+              under: { left: face(from, from.leaf, 0), right: face(to, to.leaf, 1) },
+            }
+          : {
+              front: face(to, to.leaf, 1),
+              back: face(from, from.leaf, 0),
+              under: { left: face(to, to.leaf, 0), right: face(from, from.leaf, 1) },
+            };
+      };
+
+      const here: Side = { psg: passage, pages: spreads, leaf: currentLeaf };
 
       // Within the chapter: the recto you are on lifts, its reverse is the new
       // verso, and the new recto is already lying underneath. Backward mirrors.
       if (nextLeaf >= 0 && nextLeaf < spreads.length) {
-        const from = spreads[currentLeaf] ?? [];
-        const to = spreads[nextLeaf] ?? [];
-        const art = forward
-          ? {
-              front: paint(passage, from[1], "recto", folio(currentLeaf, true)),
-              back: paint(passage, to[0], "verso", folio(nextLeaf, false)),
-              under: {
-                left: paint(passage, from[0], "verso", folio(currentLeaf, false)),
-                right: paint(passage, to[1], "recto", folio(nextLeaf, true)),
-              },
-            }
-          : {
-              front: paint(passage, to[1], "recto", folio(nextLeaf, true)),
-              back: paint(passage, from[0], "verso", folio(currentLeaf, false)),
-              under: {
-                left: paint(passage, to[0], "verso", folio(nextLeaf, false)),
-                right: paint(passage, from[1], "recto", folio(currentLeaf, true)),
-              },
-            };
-        return { art, forward, commit: () => setLeaf(nextLeaf) };
+        const there: Side = { psg: passage, pages: spreads, leaf: nextLeaf };
+        return {
+          art: artFor(here, there),
+          forward,
+          commit: () => setLeaf(nextLeaf),
+        };
       }
 
       // Across a chapter boundary, the leaf spans two chapters at once.
@@ -361,35 +442,50 @@ export default function BibleTable() {
       const side = forward ? spreadsAfter : spreadsBefore;
       if (!hop || !psg || !side?.length) return null;
 
-      const from = spreads[currentLeaf] ?? [];
-      const landing = forward ? 0 : side.length - 1;
-      const to = side[landing] ?? [];
-      const art = forward
-        ? {
-            front: paint(passage, from[1], "recto", folio(currentLeaf, true)),
-            back: paint(psg, to[0], "verso", folio(landing, false)),
-            under: {
-              left: paint(passage, from[0], "verso", folio(currentLeaf, false)),
-              right: paint(psg, to[1], "recto", folio(landing, true)),
-            },
-          }
-        : {
-            front: paint(psg, to[1], "recto", folio(landing, true)),
-            back: paint(passage, from[0], "verso", folio(currentLeaf, false)),
-            under: {
-              left: paint(psg, to[0], "verso", folio(landing, false)),
-              right: paint(passage, from[1], "recto", folio(currentLeaf, true)),
-            },
-          };
+      const over: Side = { psg, pages: side, leaf: forward ? 0 : side.length - 1 };
       // Backward lands on the previous chapter's last page, which the leaf
       // clamp already resolves once the new chapter is measured.
-      return { art, forward, commit: () => goTo(hop.index, hop.chapter, !forward) };
+      return {
+        art: artFor(here, over),
+        forward,
+        commit: () => goTo(hop.index, hop.chapter, !forward),
+      };
     },
     [
-      reduced, dims.single, currentLeaf, spreads, passage, paint, index, chapter,
-      neighbours.next, neighbours.prev, spreadsAfter, spreadsBefore, goTo,
+      reduced, currentLeaf, spreads, passage, paint, index, chapter,
+      neighbours.next, neighbours.prev, spreadsAfter, spreadsBefore, goTo, perSpread,
     ],
   );
+
+  /**
+   * The spread the book opens onto has to be lying there before the cover
+   * lands. Staging only happens on a turn, so without this the reveal is the
+   * bare page block and the text arrives afterwards, on the cross-fade.
+   */
+  useEffect(() => {
+    const scene = stageRef.current;
+    // Once the reader owns the screen the canvas is invisible, and two
+    // drawPage passes on the frame a cross-fade starts is a dropped frame.
+    if (!scene || turning || phase === "shelf" || phase === "reading") return;
+    if (!dims.pw || !dims.ph) return;
+
+    // load() only commits on success, so mid-fetch the passage still holds the
+    // chapter before it. Opening Isaiah onto Genesis 1 is worse than opening
+    // it onto clean paper, which is what an empty page list paints.
+    const here = passage.book === book.name && passage.chapter === chapter;
+    const face = (l: number, slot: number, side: "verso" | "recto") =>
+      paint(passage, here ? spreads[l]?.[slot] : undefined, side, folioOf(l, slot === 1, perSpread));
+
+    // One page to a spread centres the right-hand slot and pushes the left one
+    // off-frame, so the page being read is the right slot in either layout.
+    scene.setSpread(
+      perSpread === 2 ? face(currentLeaf, 0, "verso") : face(currentLeaf - 1, 0, "verso"),
+      perSpread === 2 ? face(currentLeaf, 1, "recto") : face(currentLeaf, 0, "verso"),
+    );
+  }, [
+    phase, turning, passage, spreads, currentLeaf, paint, dims.pw, dims.ph,
+    perSpread, book.name, chapter,
+  ]);
 
   /** The plain cut, for when the scene cannot carry the turn. */
   const jump = useCallback(
@@ -457,7 +553,14 @@ export default function BibleTable() {
 
       const box = host.getBoundingClientRect();
       const spine = box.left + box.width / 2;
-      const p = progressAt(e.clientX, spine, dims.pw, plan.forward);
+      // With one page on screen the spine sits at its left edge, so a sweep
+      // measured over a whole page width would need the finger to travel a
+      // page *past* the spine — off the side of the phone. Mapping the half
+      // circle onto half the page keeps the whole gesture reachable; the cost
+      // is that past vertical the free edge runs ahead of the fingertip, which
+      // at that size nobody sees.
+      const reach = dims.single ? dims.pw / 2 : dims.pw;
+      const p = progressAt(e.clientX, spine, reach, plan.forward);
 
       // Capture keeps a drag tracking after it leaves the handle. It can be
       // refused, and the turn should still work if it is.
@@ -474,12 +577,12 @@ export default function BibleTable() {
         commit: plan.commit,
         forward: plan.forward,
         spine,
-        width: dims.pw,
+        width: reach,
         trail: [{ x: e.clientX, t: performance.now() }],
         p,
       };
     },
-    [phase, turning, planTurn, dims.pw],
+    [phase, turning, planTurn, dims.pw, dims.single],
   );
 
   const movePage = useCallback((e: React.PointerEvent) => {
@@ -501,20 +604,132 @@ export default function BibleTable() {
       return;
     }
 
-    // Velocity in progress per second, measured over the last stretch of
-    // travel — the scene decides in its own units and never sees pixels.
-    const now = performance.now();
-    const from = grip.trail.find((s) => now - s.t < 90) ?? grip.trail[0];
-    const seconds = Math.max(16, now - from.t) / 1000;
-    const travelled =
-      progressAt(e.clientX, grip.spine, grip.width, grip.forward) -
-      progressAt(from.x, grip.spine, grip.width, grip.forward);
+    // Velocity in progress per second — the scene decides in its own units
+    // and never sees pixels.
+    const speed = velocityOf(grip.trail, performance.now(), e.clientX, (x) =>
+      progressAt(x, grip.spine, grip.width, grip.forward),
+    );
 
-    void scene.release(grip.p, travelled / seconds).then((completed) => {
+    void scene.release(grip.p, speed).then((completed) => {
       if (completed) grip.commit();
       setTurning(false);
     });
   }, []);
+
+  /* --- Pulling the cover open --------------------------------------------- */
+  /**
+   * The cover sweeps the same half circle a leaf does, so it reuses the same
+   * angular mapping — but anchored to where the hand first landed rather than
+   * read absolutely. Shut, the book is framed small and turned -27°, so its
+   * free edge already sits well right of centre; read absolutely, touching it
+   * would snap the cover 40% open before the hand had moved at all.
+   */
+  const cover = useRef<{
+    id: number;
+    spine: number;
+    /** Where on the sweep the hand started, and how open the board was then. */
+    p0: number;
+    o0: number;
+    trail: Sample[];
+    openness: number;
+    /** False until the hand has moved far enough to mean it. */
+    pulled: boolean;
+  } | null>(null);
+
+  /** The hand's position along the sweep, re-based so the grab point is zero. */
+  const coverAt = useCallback(
+    (clientX: number, grip: { spine: number; p0: number; o0: number }) => {
+      const raw = progressAt(clientX, grip.spine, dims.pw, true);
+      let advanced = Math.max(0, (raw - grip.p0) / Math.max(0.0001, 1 - grip.p0));
+      // The sweep is measured against the page width the book will *land* in,
+      // but a shut book is framed at 0.62 of that. Without the gain the hand
+      // crosses most of the screen before the cover has visibly moved; with
+      // it, the board keeps up with the edge you think you are holding.
+      advanced = Math.min(1, advanced / SHUT_FRAMING);
+      return Math.min(1, grip.o0 + (1 - grip.o0) * advanced);
+    },
+    [dims.pw],
+  );
+
+  const takeCover = useCallback(
+    (e: React.PointerEvent) => {
+      // Reduced motion keeps the click, which cuts instantly; and a scene that
+      // is mid-close is still fair game to catch and pull back open.
+      if (reduced || cover.current) return;
+      if (phase !== "shelf" && phase !== "closing") return;
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      const host = spreadRef.current;
+      if (!host || !stageRef.current) return;
+
+      const box = host.getBoundingClientRect();
+      const spine = box.left + box.width / 2;
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId);
+      } catch {
+        /* not fatal — the handlers are on the element either way */
+      }
+      // Deliberately not grabbing yet. A tap must never touch the scene, or
+      // the click that follows would have nothing left to open.
+      cover.current = {
+        id: e.pointerId,
+        spine,
+        p0: progressAt(e.clientX, spine, dims.pw, true),
+        o0: 0,
+        trail: [{ x: e.clientX, t: performance.now() }],
+        openness: 0,
+        pulled: false,
+      };
+    },
+    [reduced, phase, dims.pw],
+  );
+
+  const moveCover = useCallback(
+    (e: React.PointerEvent) => {
+      const grip = cover.current;
+      const scene = stageRef.current;
+      if (!grip || grip.id !== e.pointerId || !scene) return;
+
+      // Promote to a real pull only once the hand has committed to one, so a
+      // click with a shaky finger is still a click.
+      if (!grip.pulled) {
+        if (Math.abs(e.clientX - grip.trail[0].x) < 6) return;
+        grip.pulled = true;
+        clearTimers();
+        setPhase("pulling");
+        beginOpening();
+        grip.o0 = scene.grabCover();
+        // Re-anchor: the board may already have been part way over.
+        grip.p0 = progressAt(e.clientX, grip.spine, dims.pw, true);
+      }
+
+      grip.openness = coverAt(e.clientX, grip);
+      grip.trail.push({ x: e.clientX, t: performance.now() });
+      if (grip.trail.length > 8) grip.trail.shift();
+      scene.dragCover(grip.openness);
+    },
+    [clearTimers, beginOpening, coverAt, dims.pw],
+  );
+
+  const dropCover = useCallback(
+    (e: React.PointerEvent) => {
+      const grip = cover.current;
+      if (!grip || grip.id !== e.pointerId) return;
+      cover.current = null;
+      const scene = stageRef.current;
+      if (!grip.pulled || !scene) return; // a tap; the click handler has it
+
+      const speed = velocityOf(grip.trail, performance.now(), e.clientX, (x) =>
+        coverAt(x, grip),
+      );
+      // The promise is the timeline. There is no "opening" phase on this path
+      // because there is no duration to wait out — the board lands when the
+      // physics say it has.
+      void scene.releaseCover(grip.openness, speed).then((opened) => {
+        setPhase(opened ? "reading" : "shelf");
+      });
+    },
+    [coverAt],
+  );
 
   /* --- Keyboard ----------------------------------------------------------- */
   useEffect(() => {
@@ -541,19 +756,11 @@ export default function BibleTable() {
   }, [phase, shiftBook, turn, closeBook, contentsOpen]);
 
   /* --- Scene variables ---------------------------------------------------- */
+  // Only the page's own size: the book's thickness, squares and tilt are the
+  // scene's business now, not CSS's.
   const scene = {
     "--pw": `${dims.pw}px`,
     "--ph": `${dims.ph}px`,
-    "--tk": `${Math.max(34, Math.round(dims.pw * 0.13))}px`,
-    // The boards overhang the block on the three outer edges, as a bound
-    // book does — enough to frame the gilding, not enough to hide it.
-    "--sq": "4px",
-    "--scale": open ? 1 : dims.single ? 0.64 : 0.6,
-    // Exactly flat: any splay makes the board's outer edge intersect the
-    // leaf lying on it, and the compositor sorts the halves against each other.
-    "--cover": open ? "-180deg" : "0deg",
-    "--tilt-x": open ? "5deg" : "8deg",
-    "--tilt-y": open ? "0deg" : "-27deg",
   } as React.CSSProperties;
 
   const label = `${book.name} ${chapter}`;
@@ -584,10 +791,15 @@ export default function BibleTable() {
           lineHeight: 0.86,
           letterSpacing: "-0.03em",
           // Blur in em so the softness tracks the type size across breakpoints.
-          filter: open ? "blur(0.2em)" : "blur(0.055em)",
-          opacity: open ? 0 : 0.86,
-          transform: open ? "scale(1.08)" : "scale(1)",
-          transition: `filter ${OPEN_MS}ms var(--ease-leather), opacity 620ms ease, transform ${OPEN_MS}ms var(--ease-leather)`,
+          filter: lifting ? "blur(0.2em)" : "blur(0.055em)",
+          opacity: lifting ? 0 : 0.86,
+          transform: lifting ? "scale(1.08)" : "scale(1)",
+          // Under a hand the title has to get out of the way at the speed the
+          // hand moves, not on the click path's leisurely timeline.
+          transition:
+            phase === "pulling"
+              ? "filter 220ms ease, opacity 220ms ease, transform 220ms ease"
+              : `filter ${OPEN_MS}ms var(--ease-leather), opacity 620ms ease, transform ${OPEN_MS}ms var(--ease-leather)`,
         }}
       >
         {book.name}
@@ -609,6 +821,7 @@ export default function BibleTable() {
         openMs={OPEN_MS}
         openRef={openRef}
         pageHeight={dims.ph}
+        through={wayThrough(index, chapter)}
         reduced={reduced}
         turning={turning}
         controlsRef={stageRef}
@@ -616,6 +829,11 @@ export default function BibleTable() {
         onGrab={takePage}
         onDragMove={movePage}
         onDrop={dropPage}
+        lifting={lifting}
+        pulling={phase === "pulling"}
+        onCoverDown={takeCover}
+        onCoverMove={moveCover}
+        onCoverUp={dropCover}
       />
 
       {/* Off-screen twins: the chapter being read, and the two it can turn
@@ -639,13 +857,13 @@ export default function BibleTable() {
         </div>
       ))}
 
-      {phase === "shelf" || phase === "closing" ? (
+      {phase === "shelf" || phase === "closing" || phase === "pulling" ? (
         <Shelf
           book={book}
           onShift={shiftBook}
           onOpen={openBook}
           onContents={() => setContentsOpen(true)}
-          dimmed={phase === "closing"}
+          dimmed={phase !== "shelf"}
         />
       ) : (
         <Turner
@@ -899,6 +1117,7 @@ type SceneProps = {
   openMs: number;
   openRef: React.Ref<HTMLButtonElement>;
   pageHeight: number;
+  through: number;
   leaf: number;
   reduced: boolean;
   turning: boolean;
@@ -907,6 +1126,12 @@ type SceneProps = {
   onGrab: (e: React.PointerEvent, forward: boolean) => void;
   onDragMove: (e: React.PointerEvent) => void;
   onDrop: (e: React.PointerEvent) => void;
+  /** True while the cover is under a hand rather than on a timeline. */
+  lifting: boolean;
+  pulling: boolean;
+  onCoverDown: (e: React.PointerEvent) => void;
+  onCoverMove: (e: React.PointerEvent) => void;
+  onCoverUp: (e: React.PointerEvent) => void;
 };
 
 function Scene({
@@ -924,6 +1149,7 @@ function Scene({
   openMs: OPEN_MS,
   openRef,
   pageHeight,
+  through,
   leaf,
   reduced,
   turning,
@@ -932,6 +1158,11 @@ function Scene({
   onGrab,
   onDragMove,
   onDrop,
+  lifting,
+  pulling,
+  onCoverDown,
+  onCoverMove,
+  onCoverUp,
 }: SceneProps) {
   // The moving leaf lives in the scene, so the reader stands aside for it.
   const showText = reading && !turning;
@@ -948,11 +1179,11 @@ function Scene({
           aria-hidden
           className="absolute top-[88%] left-1/2 -z-10 rounded-[50%] blur-2xl"
           style={{
-            width: open ? "calc(var(--pw) * 2.05)" : "calc(var(--pw) * 0.9)",
+            width: lifting ? "calc(var(--pw) * 2.05)" : "calc(var(--pw) * 0.9)",
             height: "calc(var(--ph) * 0.16)",
-            transform: `translateX(-50%) translateY(${open ? "4%" : "0"})`,
+            transform: `translateX(-50%) translateY(${lifting ? "4%" : "0"})`,
             background: "radial-gradient(closest-side, rgba(48,58,96,0.4), rgba(48,58,96,0))",
-            transition: `all ${OPEN_MS}ms var(--ease-leather)`,
+            transition: pulling ? "all 220ms ease" : `all ${OPEN_MS}ms var(--ease-leather)`,
           }}
         />
 
@@ -972,6 +1203,8 @@ function Scene({
             active={!showText}
             book={book}
             pageHeightPx={pageHeight}
+            through={through}
+            single={single}
             reduced={reduced}
             controlsRef={controlsRef}
             className="h-full w-full"
@@ -1022,37 +1255,53 @@ function Scene({
           {/* You grab a page by its outer edge, not by its middle — which is
               also what keeps the text underneath selectable. Pointer events so
               mouse and touch are one path; capture so a drag that leaves the
-              handle still tracks. */}
-          {!single &&
-            ([
+              handle still tracks. On a phone these stay strips rather than
+              becoming a full-width swipe: the page is the whole screen there,
+              and a swipe over the middle of it would take long-press selection
+              with it. */}
+          {(
+            [
               ["left-0 rounded-l-[3px]", false] as const,
               ["right-0 rounded-r-[3px]", true] as const,
-            ] as const).map(([edge, forward]) => (
-              <div
-                key={edge}
-                aria-hidden
-                onPointerDown={(e) => onGrab(e, forward)}
-                onPointerMove={onDragMove}
-                onPointerUp={onDrop}
-                onPointerCancel={onDrop}
-                className={`absolute inset-y-0 cursor-grab active:cursor-grabbing ${edge}`}
-                style={{ width: "calc(var(--pw) * 0.28)", touchAction: "none" }}
-              />
-            ))}
+            ] as const
+          ).map(([edge, forward]) => (
+            <div
+              key={edge}
+              aria-hidden
+              onPointerDown={(e) => onGrab(e, forward)}
+              onPointerMove={onDragMove}
+              onPointerUp={onDrop}
+              onPointerCancel={onDrop}
+              className={`absolute inset-y-0 cursor-grab active:cursor-grabbing ${edge}`}
+              style={{ width: "calc(var(--pw) * 0.28)", touchAction: "none" }}
+            />
+          ))}
         </div>
 
         {/* The book is a canvas, so the affordance is a real button laid over
-            it — keyboard reachable, and labelled with where it will open. */}
+            it — keyboard reachable, and labelled with where it will open. It
+            is also the cover's grab handle: pointer events open it by hand,
+            while click and Enter keep the plain, instant path. */}
         <button
           ref={openRef}
           onClick={onOpen}
+          onPointerDown={onCoverDown}
+          onPointerMove={onCoverMove}
+          onPointerUp={onCoverUp}
+          onPointerCancel={onCoverUp}
           disabled={open}
           aria-label={open ? undefined : `Open the Bible at ${label}`}
-          className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 cursor-pointer rounded-sm disabled:pointer-events-none"
+          className={[
+            "absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 rounded-sm disabled:pointer-events-none",
+            reduced ? "cursor-pointer" : "cursor-grab active:cursor-grabbing",
+          ].join(" ")}
           style={{
             width: "calc(var(--pw) * 1.05)",
             height: "calc(var(--ph) * 1.05)",
             opacity: showText ? 0 : 1,
+            // Buttons default to `auto`, which would let the browser scroll
+            // the page out from under a pull on a touchscreen.
+            touchAction: "none",
           }}
         />
       </div>
