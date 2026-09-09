@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
+import Image from "next/image";
 import { CANON, DIVISION_NOTE, wayThrough } from "@/lib/canon";
 import { OPENING, type Passage, type Verse } from "@/lib/passage";
 import { usePagination } from "./usePagination";
@@ -937,8 +938,15 @@ function Chrome({
   const active = reading || phase === "opening";
   return (
     <header className="relative z-30 flex shrink-0 items-center justify-between gap-4 px-5 py-6 md:px-10">
-      <div className="flex items-baseline gap-4 whitespace-nowrap">
-        <span className="label text-ink-soft">Foredge</span>
+      <div className="flex items-center gap-4 whitespace-nowrap">
+        <Image
+          src="/brand/logo.png"
+          alt="Foredge"
+          width={2172}
+          height={724}
+          priority
+          className="h-7 w-auto object-contain"
+        />
         <span className="label hidden text-ink-faint md:inline">World English Bible</span>
       </div>
 

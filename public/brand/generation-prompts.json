@@ -1,0 +1,22 @@
+{
+  "mode": "Built-in image generation",
+  "logo": "Use case: logo-brand. Create the final primary logo for Foredge, a quiet tactile Bible reading app named for the gilded fore-edge of a bound book. Transparent background. Horizontal lockup: left a simple distinctive geometric book monogram, an indigo upright F formed by a book spine and two turning pages, with restrained gold fore-edge accent; right exact word 'Foredge' in refined Bodoni-style serif lettering, dark indigo #141a4d. Palette #141a4d #2c3aae #c9a227. Flat crisp vector-like edges, timeless literary publisher identity, generous clear space. No mockup, no shadows, no gradients, no extra words. Wide canvas.",
+  "assets": [
+    [
+      "icon",
+      "Use case: logo-brand. Reference is approved Foredge identity. Create square app icon/favicon, only the F book/page monogram from reference, same silhouette and indigo/gold colors, simplified flat fills with no tiny details or gradients. Center at 70% canvas size on solid warm vellum #f6f1e4 background, square full bleed no rounded outer corners. No wordmark or text. Strong readable silhouette at 16px."
+    ],
+    [
+      "social-wide",
+      "Use case: ads-marketing. Create landscape 1.91:1 social link preview for Foredge Bible reading app. Use reference logo identity faithfully. Pale cool haze #e4e7ef background, elegantly typeset large 'Foredge' at left with small matching F book monogram above and exact subtitle 'A Bible you open.' Below subtitle small 'World English Bible'. On right a beautifully rendered closed indigo leather Bible with luminous gilded page edges, warm paper and subtle soft shadow in a cool pale room. Quiet literary editorial art direction, generous negative space, precise elegant Bodoni serif typography, no buttons no URL no extra copy. Keep content well inside 8% margins."
+    ],
+    [
+      "social-square",
+      "Use case: ads-marketing. Create square social image for Foredge Bible reading app, matching reference F book monogram and Bodoni wordmark. Cool pale haze #e4e7ef background. Centered composition, logo wordmark 'Foredge' in upper quarter, exact subtitle 'A Bible you open.' below. Lower middle features beautiful closed indigo leather Bible with luminous gold page edges in a pale room, warm vellum paper, soft shadow. Restrained literary editorial design, airy generous space, no extra text or buttons. All text safely inside generous margins."
+    ],
+    [
+      "social-story",
+      "Use case: ads-marketing. Create portrait 9:16 story social image for Foredge Bible reading app, matching reference F book monogram and Bodoni wordmark. Cool pale haze #e4e7ef room background, elegant restrained literary editorial composition. At upper middle small F book monogram, then large exact name 'Foredge', then exact subtitle 'A Bible you open.' Below center beautiful closed indigo leather Bible with luminous gold page edges and warm vellum paper, subtle soft shadow. Small exact 'World English Bible' near lower middle. Keep upper 15% and bottom 18% free of content for social overlays. No buttons, no URL, no extra words."
+    ]
+  ]
+}
