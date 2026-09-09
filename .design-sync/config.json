@@ -1,0 +1,35 @@
+{
+  "projectId": "dd538c2c-2154-461d-a7c4-75c87eb477b0",
+  "pkg": "foredge",
+  "globalName": "Foredge",
+  "shape": "package",
+  "srcDir": "components",
+  "tsconfig": "./tsconfig.json",
+  "cssEntry": ".design-sync/.cache/ds-styles.css",
+  "componentSrcMap": {
+    "Chevron": "components/Chevron.tsx",
+    "BooksIcon": "components/BooksIcon.tsx",
+    "PageFace": "components/Page.tsx",
+    "VerseFlow": "components/Page.tsx",
+    "Contents": "components/Contents.tsx",
+    "BibleTable": null,
+    "BookScene": null
+  },
+  "dtsPropsFor": {
+    "Chevron": "/** Which way the arrow points. */\ndir?: \"left\" | \"right\";\n/** Utility classes. Size it and colour it — the stroke is `currentColor`. */\nclassName?: string;",
+    "BooksIcon": "/** Utility classes. Size it and colour it — the stroke is `currentColor`. */\nclassName?: string;",
+    "VerseFlow": "/** The verses to set, in order. Verse 1 renders as a rubricated drop initial. */\nverses: { verse: number; text: string }[];\n/** Chapter number — this is what the drop initial shows. */\nchapter: number;",
+    "PageFace": "/** Which half of the spread this leaf is. Sets the gutter margin and which\n *  side of the running head carries the book name. */\nside: \"verso\" | \"recto\";\n/** Book name, for the running head. */\nbook: string;\n/** Chapter number — drives the drop initial and the printed verse range. */\nchapter: number;\n/** Verses for this leaf. Pass an empty array for a blank leaf: the running\n *  head and folio are hidden with `invisible`, never removed. */\nverses: { verse: number; text: string }[];\n/** Page number, printed in the footer. */\nfolio: number;\n/** Ref to the body column. The paginator measures this element. */\nbodyRef?: React.Ref<HTMLDivElement>;",
+    "Contents": "/** Index into CANON of the book currently open. It gets the marker and initial focus. */\ncurrent: number;\n/** Called with the CANON index of the book the reader picked. */\nonPick: (index: number) => void;\n/** Called on Escape, or on a click outside the panel. */\nonClose: () => void;"
+  },
+  "overrides": {
+    "Contents": {
+      "cardMode": "single",
+      "viewport": "1200x900"
+    },
+    "Chevron": {
+      "cardMode": "column"
+    }
+  },
+  "readmeHeader": ".design-sync/conventions.md"
+}
